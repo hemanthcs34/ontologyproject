@@ -86,3 +86,68 @@ class FrameInstance:
              "value": val, "confidence": round(conf, 3)}
             for role, (val, conf) in self.slots.items()
         ]
+
+
+
+
+@dataclass
+class ExtractionContext:
+    """
+    Built once per document from a single spaCy parse.
+    Every downstream module reads from this object — none of them
+    touch doc.ents or doc.noun_chunks directly.  That structural
+    constraint (enforced by API, not convention) is what fixes the
+    three-divergent-entity-sets bug in v1.
+    """
+    doc: object
+    concepts: Dict[str, Concept] = field(default_factory=dict)
+    # stored so resolve() can consult it post-build (e.g. "he" -> "dave")
+    _canonical_map: Dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def build(cls, doc, canonical_map: Dict[str, str] = None) -> "ExtractionContext":
+        """
+        canonical_map: output of RuleBasedCorefResolver.resolve().
+        Stored on the context so every downstream resolve() call can use it.
+        Pass None when coref is not needed — still builds correctly.
+        """
+        cm = canonical_map or {}
+        ctx = cls(doc=doc, _canonical_map=cm)
+
+        for ent in doc.ents:
+            raw_key = ent.text.lower().strip()
+            key = cm.get(raw_key, raw_key)
+            if key not in ctx.concepts:
+                ctx.concepts[key] = Concept(key, ent.text, ent.label_, 0.9, "NER")
+
+        for chunk in doc.noun_chunks:
+            raw_key = chunk.lemma_.lower().strip()
+            key = cm.get(raw_key, raw_key)
+            if key not in ctx.concepts and len(key.split()) > 1:
+                ctx.concepts[key] = Concept(key, chunk.text, "CONCEPT", 0.6, "NOUN_CHUNK")
+
+        return ctx
+
+    def entities_in_sentence(self, sent) -> list:
+        """
+        Single replacement for every module's `list(sent.ents)` call.
+        Accepts entities whose raw text is either directly in concepts or
+        reachable through the coref map (e.g. the token 'he' maps to 'dave').
+        """
+        return [
+            e for e in sent.ents
+            if self._canonical_map.get(e.text.lower().strip(),
+                                       e.text.lower().strip()) in self.concepts
+        ]
+
+    def resolve(self, text: str) -> str:
+        """
+        Resolution order:
+          1. coref map  (pronoun / alias -> canonical name)
+          2. concept registry  (return the stored canonical_id)
+          3. normalised input  (unknown text, returned as-is)
+        """
+        key = text.lower().strip()
+        key = self._canonical_map.get(key, key)          # step 1
+        return self.concepts[key].canonical_id if key in self.concepts else key  # step 2/3
+
