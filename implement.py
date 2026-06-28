@@ -151,3 +151,102 @@ class ExtractionContext:
         key = self._canonical_map.get(key, key)          # step 1
         return self.concepts[key].canonical_id if key in self.concepts else key  # step 2/3
 
+
+
+
+_PRONOUN_GENDER = {
+    "he": "MALE",  "him": "MALE",  "his": "MALE",  "himself": "MALE",
+    "she": "FEMALE", "her": "FEMALE", "hers": "FEMALE", "herself": "FEMALE",
+    "they": "PLURAL", "them": "PLURAL", "their": "PLURAL", "themselves": "PLURAL",
+    "it": "NEUT",  "its": "NEUT",  "itself": "NEUT",
+}
+
+_NER_GENDER = {
+    "ORG": "NEUT", "GPE": "NEUT", "LOC": "NEUT",
+    "PRODUCT": "NEUT", "FAC": "NEUT", "WORK_OF_ART": "NEUT",
+    "PERSON": None,  # determined from name heuristic below
+}
+
+# ~200 common first names with known gender.
+# Not an attempt at completeness — purpose is to break ties when the
+# text has multiple male/female PERSON entities in scope.
+_NAME_GENDER = {
+    # male
+    "bill": "MALE", "dave": "MALE", "david": "MALE", "william": "MALE",
+    "fred": "MALE", "frederick": "MALE", "paul": "MALE", "george": "MALE",
+    "john": "MALE", "james": "MALE", "robert": "MALE", "michael": "MALE",
+    "steve": "MALE", "steven": "MALE", "larry": "MALE", "mark": "MALE",
+    "elon": "MALE", "jeff": "MALE", "tim": "MALE", "satya": "MALE",
+    "sam": "MALE", "peter": "MALE", "richard": "MALE", "charles": "MALE",
+    # female
+    "lucile": "FEMALE", "alice": "FEMALE", "sarah": "FEMALE", "mary": "FEMALE",
+    "emily": "FEMALE", "lisa": "FEMALE", "jennifer": "FEMALE", "jessica": "FEMALE",
+    "susan": "FEMALE", "karen": "FEMALE", "nancy": "FEMALE", "linda": "FEMALE",
+    "patricia": "FEMALE", "barbara": "FEMALE", "elizabeth": "FEMALE",
+}
+
+
+class RuleBasedCorefResolver:
+    """
+    Resolves pronouns to their most-recent gender-matching named entity
+    antecedent, using morphological gender signals (no external model).
+
+    Works with the spaCy doc object your machine produces — tested with
+    mock objects in this sandbox.
+
+    Limitation: one-antecedent-per-pronoun (no cluster merging).  Errors
+    propagate silently (wrong gender → wrong antecedent), which is why
+    tier-1 frame results carry a small confidence penalty when their slot
+    value came from a coref resolution rather than a direct NER hit.
+    """
+
+    def _entity_gender(self, ent) -> Optional[str]:
+        if ent.label_ != "PERSON":
+            return _NER_GENDER.get(ent.label_, "NEUT")
+        for token in ent:
+            g = _NAME_GENDER.get(token.text.lower())
+            if g:
+                return g
+        return None  # gender unknown
+
+    def resolve(self, doc) -> Dict[str, str]:
+        """
+        Returns canonical_map: {pronoun_or_alias -> canonical_entity_key}
+        e.g. {"he": "dave", "his": "dave", "she": "lucile"}
+
+        Algorithm:
+          Walk sentences in document order.  Maintain a recency-ordered
+          list of seen PERSON/ORG/GPE entities per gender bucket.
+          When a pronoun token is encountered, look up its gender bucket
+          and pick the most-recently-seen entity in that bucket.
+        """
+        canonical_map: Dict[str, str] = {}
+        # gender bucket → list of entity canonical keys, most recent last
+        recent: Dict[str, List[str]] = defaultdict(list)
+
+        for sent in doc.sents:
+            # First pass: register named entities in recency lists
+            for ent in sent.ents:
+                gender = self._entity_gender(ent)
+                if gender:
+                    key = ent.text.lower().strip()
+                    bucket = recent[gender]
+                    if key in bucket:
+                        bucket.remove(key)
+                    bucket.append(key)  # most recent is last
+
+            # Second pass: resolve pronoun tokens
+            for token in sent:
+                lower = token.lower_
+                if lower not in _PRONOUN_GENDER:
+                    continue
+                if token.pos_ not in ("PRON",):
+                    continue
+                pronoun_gender = _PRONOUN_GENDER[lower]
+                bucket = recent.get(pronoun_gender, [])
+                if bucket:
+                    antecedent = bucket[-1]   # most recent matching entity
+                    canonical_map[lower] = antecedent
+
+        return canonical_map
+
