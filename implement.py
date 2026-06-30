@@ -312,3 +312,190 @@ class VerbNetFrameInducer:
                       "LOCATION": "pobj+prep_loc", "TEMPORAL": "pobj+prep_temp"},
             "tier": 2, "confidence": 0.55,
         }
+
+
+
+
+
+
+class DistantSupervisionModule:
+    """
+    Finds entity pairs that co-occur in the same sentence, extracts the
+    context between them, then clusters contexts via DBSCAN to discover
+    relation types with no predefined schema.
+    """
+
+    def __init__(self, max_char_gap: int = 150):
+        self.max_char_gap = max_char_gap
+        self._pairs: List[dict] = []
+
+    def extract_pairs(self, doc, context: ExtractionContext) -> List[dict]:
+        pairs = []
+        for sent in doc.sents:
+            ents = context.entities_in_sentence(sent)
+            for i in range(len(ents)):
+                for j in range(i + 1, len(ents)):
+                    e1, e2 = ents[i], ents[j]
+                    gap = e2.start_char - e1.end_char
+                    if gap > self.max_char_gap:
+                        continue
+                    ctx_text = sent.text[
+                        e1.end_char - sent.start_char:
+                        e2.start_char - sent.start_char
+                    ].strip()
+                    ctx_doc = nlp(ctx_text) if nlp else None
+                    ctx_lemmas = (
+                        " ".join(t.lemma_ for t in ctx_doc
+                                 if not t.is_stop and not t.is_punct)
+                        if ctx_doc else ctx_text
+                    )
+                    pairs.append({
+                        "entity1": context.resolve(e1.text),
+                        "type1": e1.label_,
+                        "entity2": context.resolve(e2.text),
+                        "type2": e2.label_,
+                        "context": ctx_lemmas,
+                        "sentence": sent.text,
+                    })
+        self._pairs = pairs
+        logger.info(f"[DistantSupervision] {len(pairs)} entity pairs found")
+        return pairs
+
+    def discover_relations(self) -> Dict[str, List[dict]]:
+        if len(self._pairs) < 3:
+            return {}
+        by_sig: Dict[str, List] = defaultdict(list)
+        for p in self._pairs:
+            by_sig[f"{p['type1']}-{p['type2']}"].append(p)
+
+        discovered: Dict[str, List] = {}
+        for sig, group in by_sig.items():
+            if len(group) < 2:
+                continue
+            contexts = [g["context"] for g in group if g["context"]]
+            if len(set(contexts)) < 2:
+                continue
+            try:
+                vec = TfidfVectorizer(max_features=50, min_df=1)
+                X = vec.fit_transform(contexts).toarray()
+                labels = DBSCAN(eps=0.35, min_samples=1,
+                                metric="cosine").fit_predict(X)
+                for cid in set(labels):
+                    if cid == -1:
+                        continue
+                    cluster = [group[i] for i, l in enumerate(labels) if l == cid]
+                    words = " ".join(p["context"] for p in cluster).split()
+                    name = Counter(words).most_common(1)[0][0].upper() if words else sig
+                    discovered[f"REL_{name}"] = cluster
+            except Exception:
+                continue
+        logger.info(f"[DistantSupervision] {len(discovered)} relation types discovered")
+        return discovered
+
+
+class FrameSlottingModule:
+    """
+    Iterates every VERB token in every sentence.  VerbNetFrameInducer
+    maps it to a frame with thematic roles.  Dependency parse assigns
+    entities in the sentence to those roles.
+    """
+
+    def __init__(self):
+        self._inducer = VerbNetFrameInducer()
+
+    def detect_and_fill(self, doc, context: ExtractionContext) -> List[FrameInstance]:
+        instances: List[FrameInstance] = []
+        for sent in doc.sents:
+            ent_by_root = {e.root: e for e in context.entities_in_sentence(sent)}
+            for token in sent:
+                if token.pos_ != "VERB":
+                    continue
+                fd = self._inducer.induce(token.lemma_)
+                inst = FrameInstance(
+                    frame_id=fd["frame_id"], trigger_verb=token.lemma_,
+                    tier=fd["tier"], confidence=fd["confidence"],
+                    sentence=sent.text,
+                )
+                for ent_root, ent in ent_by_root.items():
+                    role = self._dep_role(ent_root, token, fd)
+                    if role:
+                        val = context.resolve(ent.text)
+                        # slight confidence penalty when value came from coref
+                        is_coref = ent.text.lower().strip() != val
+                        inst.add_slot(role, val,
+                                      fd["confidence"] * (0.9 if is_coref else 1.0))
+                if inst.slots:
+                    instances.append(inst)
+        logger.info(f"[FrameSlotting] {len(instances)} frames filled")
+        return instances
+
+    @staticmethod
+    def _dep_role(ent_tok, trigger_tok, fd: dict) -> Optional[str]:
+        current = ent_tok
+        for _ in range(5):
+            if current == trigger_tok:
+                return "AGENT"
+            dep = current.dep_
+            if dep in _DEP_TO_SLOT:
+                role = _DEP_TO_SLOT[dep]
+                return role if fd["tier"] == 2 or role in fd["roles"] else role
+            if dep == "pobj":
+                prep = current.head.lower_ if current.head else ""
+                if prep in _PREP_LOCATION:
+                    return "LOCATION"
+                if prep in _PREP_TEMPORAL:
+                    return "TEMPORAL"
+                return "LOCATION"
+            current = current.head
+            if current == current.head:
+                break
+        return None
+
+
+class UnsupervisedRelationDiscovery:
+    """
+    Builds a distributional context profile for every entity, clusters
+    by TF-IDF cosine similarity via DBSCAN, then interprets each cluster
+    as a grouping of entities that share a latent relation.
+    """
+
+    def __init__(self):
+        self._entity_contexts: Dict[str, List[str]] = defaultdict(list)
+
+    def build_profiles(self, doc, context: ExtractionContext):
+        for sent in doc.sents:
+            ents = context.entities_in_sentence(sent)
+            for ent in ents:
+                key = context.resolve(ent.text)
+                context_words = [
+                    t.lemma_ for t in sent
+                    if not t.is_stop and not t.is_punct and t != ent.root
+                ]
+                self._entity_contexts[key].extend(context_words)
+
+    def discover(self, min_cluster: int = 2) -> List[dict]:
+        keys = list(self._entity_contexts.keys())
+        if len(keys) < 3:
+            return []
+        feature_vecs = [
+            " ".join(self._entity_contexts[k]) or "EMPTY" for k in keys
+        ]
+        try:
+            X = TfidfVectorizer(max_features=50).fit_transform(feature_vecs).toarray()
+            labels = DBSCAN(eps=0.4, min_samples=min_cluster,
+                            metric="cosine").fit_predict(X)
+            patterns = []
+            for cid in set(labels):
+                if cid == -1:
+                    continue
+                members = [keys[i] for i, l in enumerate(labels) if l == cid]
+                all_words = []
+                for m in members:
+                    all_words.extend(self._entity_contexts[m])
+                sig = [w for w, _ in Counter(all_words).most_common(3)]
+                patterns.append({"cluster_id": int(cid),
+                                  "entities": members, "signature": sig})
+            logger.info(f"[UnsupervisedDiscovery] {len(patterns)} patterns found")
+            return patterns
+        except Exception:
+            return []
