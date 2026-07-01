@@ -56,30 +56,55 @@ except OSError:
 # rest of BOOFS behaves exactly as before.
 
 try:
-    import spacy_experimental  # noqa: F401
-    _COREF_BACKEND = "spacy_experimental"
+    from fastcoref import FCoref
+    _COREF_BACKEND = "fastcoref"
 except ImportError:
     try:
-        import neuralcoref  # noqa: F401
-        _COREF_BACKEND = "neuralcoref"
+        import spacy_experimental  # noqa: F401  # type: ignore
+        _COREF_BACKEND = "spacy_experimental"
     except ImportError:
-        _COREF_BACKEND = None
+        try:
+            import neuralcoref  # noqa: F401  # type: ignore
+            _COREF_BACKEND = "neuralcoref"
+        except ImportError:
+            _COREF_BACKEND = None
 
 
 class CoreferenceResolver:
     """
     Resolves pronouns to canonical entity mentions before BOOFS extraction.
 
-    Tries spacy-experimental's coref pipeline first, then neuralcoref, and
+    Tries fastcoref first (actively maintained, fast, no spaCy pipe coupling),
+    then spacy-experimental's coref pipeline, then neuralcoref, and finally
     falls back to a lightweight rule-based resolver (nearest preceding PERSON
-    entity matching) if neither library is installed. This guarantees the
-    module always works, while preferring the more accurate neural backends
-    when present.
+    entity matching) if none of the libraries are installed. This guarantees
+    the module always works, while preferring the more accurate neural
+    backends when present.
     """
 
     def __init__(self):
         self.backend = _COREF_BACKEND
         self._coref_nlp = None
+        self._fcoref_model = None
+
+        if self.backend == "fastcoref":
+            try:
+                self._fcoref_model = FCoref()
+            except Exception:
+                logger.warning("fastcoref failed to initialize; falling back to next backend.")
+                self.backend = None
+
+        if self.backend is None:
+            # re-probe remaining backends in case fastcoref import succeeded but init failed
+            try:
+                import spacy_experimental  # noqa: F401  # type: ignore
+                self.backend = "spacy_experimental"
+            except ImportError:
+                try:
+                    import neuralcoref  # noqa: F401  # type: ignore
+                    self.backend = "neuralcoref"
+                except ImportError:
+                    self.backend = None
 
         if self.backend == "spacy_experimental":
             try:
@@ -98,11 +123,30 @@ class CoreferenceResolver:
 
     def resolve(self, text: str) -> str:
         """Replace pronouns in `text` with their resolved canonical mentions."""
+        if self.backend == "fastcoref" and self._fcoref_model is not None:
+            return self._resolve_fastcoref(text)
         if self.backend == "spacy_experimental" and self._coref_nlp is not None:
             return self._resolve_spacy_experimental(text)
         if self.backend == "neuralcoref" and self._coref_nlp is not None:
             return self._resolve_neuralcoref(text)
         return self._resolve_rule_based(text)
+
+    def _resolve_fastcoref(self, text: str) -> str:
+        """fastcoref returns character-span clusters via predict(); we resolve each
+        cluster to its longest (most descriptive) mention, same convention as the
+        other backends, so downstream behavior is identical regardless of backend."""
+        try:
+            preds = self._fcoref_model.predict(texts=[text])
+            clusters = preds[0].get_clusters(as_strings=False)  # list of list[(start, end)]
+        except Exception as e:
+            logger.warning(f"fastcoref prediction failed ({e}); returning original text.")
+            return text
+
+        span_clusters = []
+        for cluster in clusters:
+            spans = [type("Span", (), {"start_char": s, "end_char": e, "text": text[s:e]})() for s, e in cluster]
+            span_clusters.append(spans)
+        return self._apply_clusters(text, span_clusters)
 
     def _resolve_spacy_experimental(self, text: str) -> str:
         doc = self._coref_nlp(text)
@@ -116,34 +160,105 @@ class CoreferenceResolver:
         return text
 
     def _apply_clusters(self, text: str, clusters) -> str:
+        """
+        [FIX F] Two hardening changes vs. the original:
+        1. Canonical-mention selection no longer just picks the longest string in
+           the cluster — a generic descriptive phrase like "the newlyweds" or "the
+           prime minister" is often longer than the actual proper name but is a
+           worse thing to substitute everywhere. We now prefer the shortest mention
+           that looks like a proper name (starts with a capital letter, isn't a
+           common pronoun/determiner phrase), falling back to longest-string only
+           when no such candidate exists — matching the original behavior in that case.
+        2. Overlap guard: if two replacement spans ever overlap (which can happen
+           with imperfect mention boundaries from any backend), we keep only the
+           first one encountered and drop the rest, rather than letting overlapping
+           string-slicing corrupt the output (e.g. producing duplicated/garbled text).
+        """
         replacements = []
         for cluster in clusters:
             if not cluster:
                 continue
-            main = max(cluster, key=lambda s: len(s.text))
+
+            def _looks_like_proper_name(span_text: str) -> bool:
+                words = span_text.split()
+                return bool(words) and words[0][0:1].isupper() and len(words) <= 4
+
+            proper_candidates = [s for s in cluster if _looks_like_proper_name(s.text)]
+            if proper_candidates:
+                main = min(proper_candidates, key=lambda s: len(s.text))
+            else:
+                main = max(cluster, key=lambda s: len(s.text))
+
             for mention in cluster:
                 if mention.text.lower() != main.text.lower():
                     replacements.append((mention.start_char, mention.end_char, main.text))
+
+        # Sort by start descending so we can apply right-to-left without invalidating offsets.
         replacements.sort(key=lambda r: r[0], reverse=True)
-        resolved = text
+
+        # Overlap guard: drop any replacement whose span overlaps one already accepted.
+        accepted = []
         for start, end, repl in replacements:
+            if any(not (end <= a_start or start >= a_end) for a_start, a_end, _ in accepted):
+                continue  # overlaps a previously accepted span — skip to avoid corruption
+            accepted.append((start, end, repl))
+
+        resolved = text
+        for start, end, repl in accepted:
             resolved = resolved[:start] + repl + resolved[end:]
         return resolved
 
     PRONOUNS = {'he', 'him', 'his', 'she', 'her', 'hers', 'they', 'them', 'their', 'it', 'its'}
+    PERSONAL_PRONOUNS = {'he', 'him', 'his', 'she', 'her', 'hers'}  # must resolve to a PERSON
+    IMPERSONAL_PRONOUNS = {'it', 'its'}  # must resolve to a non-PERSON (ORG/GPE/PRODUCT etc.)
+    # 'they/them/their' deliberately left out of both — ambiguous (could be a person,
+    # plural group, or organization), so it falls back to whichever entity was seen
+    # most recently regardless of type, same as the original behavior.
 
     def _resolve_rule_based(self, text: str) -> str:
-        """Minimal fallback: replace pronouns with the nearest preceding PERSON/ORG entity."""
+        """
+        Minimal fallback: replace pronouns with the nearest preceding entity.
+
+        [FIX E] The original version treated PERSON and ORG as interchangeable
+        candidates for EVERY pronoun, so "he"/"his" could get resolved to an
+        organization name just because it was the closer entity (e.g. "...took
+        a job with General Electric and moved to Schenectady... he married..."
+        could wrongly pick GE or a place for "he"). This version tracks the
+        nearest PERSON and nearest non-PERSON entity separately and matches
+        each pronoun only against the candidate type it grammatically requires.
+        """
         doc = nlp(text)
-        last_entity = None
+        last_person = None
+        last_nonperson = None
         replacements = []
+
+        # Precompute token -> entity once, instead of rescanning all entities per token.
+        token_to_entity = {}
+        for ent in doc.ents:
+            if ent.label_ in ("PERSON", "ORG", "GPE", "PRODUCT"):
+                for tok in ent:
+                    token_to_entity[tok.i] = ent
+
         for token in doc:
-            if token.text.lower() in self.PRONOUNS and last_entity:
-                replacements.append((token.idx, token.idx + len(token.text), last_entity))
-            for ent in doc.ents:
-                if ent.label_ in ("PERSON", "ORG") and ent.start <= token.i < ent.end:
-                    last_entity = ent.text
-                    break
+            word = token.text.lower()
+            if word in self.PRONOUNS:
+                if word in self.PERSONAL_PRONOUNS and last_person:
+                    replacements.append((token.idx, token.idx + len(token.text), last_person))
+                elif word in self.IMPERSONAL_PRONOUNS and last_nonperson:
+                    replacements.append((token.idx, token.idx + len(token.text), last_nonperson))
+                elif word not in self.PERSONAL_PRONOUNS and word not in self.IMPERSONAL_PRONOUNS:
+                    # 'they/them/their' — ambiguous, use whichever was seen most recently
+                    fallback = last_person or last_nonperson
+                    if fallback:
+                        replacements.append((token.idx, token.idx + len(token.text), fallback))
+
+            ent = token_to_entity.get(token.i)
+            if ent is not None:
+                if ent.label_ == "PERSON":
+                    last_person = ent.text
+                else:
+                    last_nonperson = ent.text
+
         replacements.sort(key=lambda r: r[0], reverse=True)
         resolved = text
         for start, end, repl in replacements:
@@ -161,7 +276,10 @@ UNIVERSAL_FRAMES = {
         'description': 'Someone works at organization in a role',
         'slots': {
             'EMPLOYEE': {'role': 'AGENT', 'ner_types': ['PERSON']},
-            'EMPLOYER': {'role': 'PATIENT', 'ner_types': ['ORG', 'PRODUCT']},
+            # [FIX B] Broadened to include GPE: a country/government can be an
+            # "employer" for political/civic roles (e.g. "served as PM of India"),
+            # not just companies. Purely additive — ORG/PRODUCT matches still work.
+            'EMPLOYER': {'role': 'PATIENT', 'ner_types': ['ORG', 'PRODUCT', 'GPE']},
             'POSITION': {'role': 'ATTRIBUTE', 'ner_types': ['NOUN']},
             'START_TIME': {'role': 'TEMPORAL', 'ner_types': ['DATE']},
             'END_TIME': {'role': 'TEMPORAL', 'ner_types': ['DATE']},
@@ -491,23 +609,110 @@ class FrameSlottingModule:
                     if role == required_role and entity.label_ in allowed_types:
                         confidence = 0.9 if entity.label_ in allowed_types else 0.6
                         frame.add_slot(slot_name, entity.text, confidence)
+
+        # [FIX A] Fill NOUN-typed slots (POSITION, FIELD, DEGREE, RELATION_TYPE, etc.)
+        # via noun chunks. These slots are defined with ner_types=['NOUN'], but the
+        # loop above only ever checks sent.ents (spaCy NAMED entities) — 'NOUN' is a
+        # part-of-speech tag, never an NER label, so entity.label_ can never equal
+        # 'NOUN' and these slots were previously unfillable on ANY input. This adds
+        # a second pass over noun chunks (skipping any chunk that's already a named
+        # entity, to avoid double-filling) and matches them the same way, by role.
+        entity_spans = {(ent.start, ent.end) for ent in entities.values()}
+        for chunk in sent.noun_chunks:
+            if (chunk.start, chunk.end) in entity_spans:
+                continue  # already handled as a named entity above
+            role = self._assign_semantic_role(chunk.root, trigger_token)
+            for slot_name, slot_def in self.frames[frame.frame_type]['slots'].items():
+                if slot_name in frame.slots:
+                    continue  # don't overwrite an existing (higher-confidence) fill
+                if slot_def['role'] == role and 'NOUN' in slot_def['ner_types']:
+                    text = chunk.text
+                    if chunk[0].pos_ == 'DET' and len(chunk) > 1:
+                        text = chunk[1:].text  # strip leading "the"/"a"/"an"
+                    frame.add_slot(slot_name, text, confidence=0.65)
     
     def _assign_semantic_role(self, entity_token, trigger_token):
-        """Assign semantic role based on universal dependency mapping."""
-        # Find shortest dependency path to trigger
+        """
+        Assign semantic role based on universal dependency mapping.
+
+        [FIX C] The original version returned the dep_ label of the FIRST
+        ancestor token found in SEMANTIC_ROLE_MAPPING while climbing toward
+        the trigger — but 'prep' and 'pobj' both map to generic 'CONTEXT',
+        so anything reached through a preposition (e.g. "served AS the prime
+        minister OF India") lost all distinguishing information: the title
+        and the country both collapsed to CONTEXT and neither could match a
+        specific slot role. This version instead walks the FULL path to the
+        trigger, records the *nearest* governing preposition's lemma, and
+        uses that to differentiate roles (as -> ATTRIBUTE, of -> PATIENT,
+        since/in/on/during -> TEMPORAL for dates, at/near -> LOCATION for
+        places). Falls back to the original direct dep_ mapping when no
+        preposition is involved, so simple cases (nsubj/dobj/attr) behave
+        exactly as before.
+        """
+        # Direct attachment to the trigger is the strongest, least ambiguous signal.
+        if entity_token.head == trigger_token:
+            if entity_token.dep_ == 'nsubj':
+                return 'AGENT'
+            if entity_token.dep_ == 'nsubjpass':
+                return 'PATIENT'
+            if entity_token.dep_ == 'dobj':
+                return 'PATIENT'
+            if entity_token.dep_ == 'attr':
+                return 'ATTRIBUTE'
+
         current = entity_token
-        
-        for _ in range(5):
+        prep_chain = []
+        connected = False
+        # [FIX D] Clause-boundary guard. Long, comma/conjunction-heavy sentences
+        # (very common in biographical/narrative text) can have a head-chain that
+        # technically reaches the trigger within a few hops even when the entity
+        # is semantically in a completely different clause — e.g. "...took a job
+        # with GE and moved to X, where he married Y" lets "Y" reach "job" via
+        # the conj/relcl chain, wrongly filling an EMPLOYMENT slot with a person
+        # from the marriage clause. We stop the walk (treat as NOT connected) the
+        # moment we cross into a relative clause (relcl), adverbial clause (advcl),
+        # clausal complement (ccomp), or a different finite VERB that isn't the
+        # trigger itself — these all signal "this is a different clause" in the
+        # universal dependency scheme, regardless of domain or sentence content.
+        for _ in range(6):
             if current == trigger_token:
-                return "AGENT"
-            
-            dep = current.dep_
-            if dep in SEMANTIC_ROLE_MAPPING:
-                return SEMANTIC_ROLE_MAPPING[dep]
-            
-            current = current.head
-            if current == current.head:  # Root reached
+                connected = True
                 break
+            if current.dep_ in ('relcl', 'advcl', 'ccomp'):
+                break  # crossed into a different clause — stop, not connected
+            if current.pos_ == 'VERB' and current != trigger_token:
+                break  # passed through another verb's clause
+            if current.dep_ == 'prep':
+                prep_chain.append(current.lemma_.lower())
+            nxt = current.head
+            if nxt == current:  # Root reached
+                break
+            current = nxt
+
+        if connected and prep_chain:
+            nearest_prep = prep_chain[0]  # preposition closest to the entity itself
+            ent_type = entity_token.ent_type_
+
+            # Check entity-type-specific cases first (more specific signal).
+            if ent_type == 'DATE' and nearest_prep in ('since', 'in', 'on', 'during', 'until', 'from', 'to'):
+                return 'TEMPORAL'
+            if ent_type in ('GPE', 'LOC') and nearest_prep in ('at', 'in', 'near'):
+                return 'LOCATION'
+
+            # Generic associative/role prepositions — covers many common phrasings:
+            # "served AS X", "minister OF Y", "job WITH Z", "worked FOR Z",
+            # "employed BY Z", "studied AT Z". Not tied to any one sentence pattern.
+            if nearest_prep == 'as':
+                return 'ATTRIBUTE'
+            if nearest_prep in ('of', 'with', 'for', 'by', 'at'):
+                return 'PATIENT'
+
+        # Fallback: original direct dependency-label mapping (unchanged behavior).
+        dep = entity_token.dep_
+        if dep in SEMANTIC_ROLE_MAPPING:
+            return SEMANTIC_ROLE_MAPPING[dep]
+
+        return "CONTEXT"
         
         return "CONTEXT"
 
@@ -828,6 +1033,49 @@ class BOOFSOntologyLearner:
                 if rel not in relations_set:
                     relations_set.add(rel)
                     relations_list.append(rel)
+
+            # [NEW CODE — FIX] Fallback for frames that don't match a fully-paired
+            # template above (e.g. EMPLOYEE filled but EMPLOYER missing). Without
+            # this, a frame's entity is silently dropped from relations.csv even
+            # though it was correctly detected. We still emit *something* using
+            # the frame's AGENT-role slot connected either to the next available
+            # slot, or to the trigger verb itself if no other slot was filled,
+            # so the entity always survives into the final consolidated graph.
+            else:
+                frame_def = UNIVERSAL_FRAMES.get(frame.frame_type, {})
+                slot_roles = frame_def.get('slots', {})
+                agent_slot = next((s for s in frame.slots if slot_roles.get(s, {}).get('role') == 'AGENT'), None)
+                if agent_slot is not None:
+                    agent_value, agent_conf = frame.slots[agent_slot]
+                    other_slots = [s for s in frame.slots if s != agent_slot]
+                    if other_slots:
+                        for other_slot in other_slots:
+                            other_value, other_conf = frame.slots[other_slot]
+                            rel = RelationExtract(
+                                agent_value,
+                                f"{frame.frame_type}_{other_slot}",
+                                other_value,
+                                confidence=min(agent_conf, other_conf) * 0.9
+                            )
+                            rel.source = 'frame_based_partial'
+                            rel.evidence = frame.sentence
+                            if rel not in relations_set:
+                                relations_set.add(rel)
+                                relations_list.append(rel)
+                    else:
+                        # Only the agent slot was filled — still anchor it to the
+                        # trigger so the entity isn't lost from the graph entirely.
+                        rel = RelationExtract(
+                            agent_value,
+                            frame.frame_type,
+                            frame.trigger,
+                            confidence=agent_conf * 0.7
+                        )
+                        rel.source = 'frame_based_partial'
+                        rel.evidence = frame.sentence
+                        if rel not in relations_set:
+                            relations_set.add(rel)
+                            relations_list.append(rel)
         
         # From distributional patterns
         for pattern in patterns:
@@ -992,7 +1240,7 @@ class KGEmbeddingModule:
         """Return top-k predicted (head, relation, tail) triples not already in the graph."""
         if not self.is_trained:
             raise RuntimeError("Call train() before predict_missing_links().")
-        from pykeen.models.predict import predict_all
+        from pykeen.predict import predict_all  # moved here from pykeen.models.predict in newer PyKEEN
         predictions = predict_all(model=self.rotate_result.model, k=top_k)
         df = predictions.process(factory=self.triples_factory).df
         return df.head(top_k)
@@ -1134,7 +1382,18 @@ def evaluate_entity_similarity_quality(kg_embedder: 'KGEmbeddingModule', sample_
 if __name__ == "__main__":
     # Example text (works on ANY text without configuration!)
     sample_text = """
-    Narendra Damodardas Modi (born 17 September 1950) is an Indian politician who has served as the prime minister of India since 26 May 2014. Modi was the chief minister of Gujarat from 2001 to 2014 and is the Member of Parliament (MP) for Varanasi. He is a member of the Bharatiya Janata Party (BJP) and of the Rashtriya Swayamsevak Sangh (RSS), a right-wing Hindutva paramilitary volunteer organisation. He is India's third-longest-serving prime minister, and the longest-serving prime minister outside the Indian National Congress.
+    Bill and Dave became friends when they were both engineering students at Stanford.
+    After graduation, Dave took a job with General Electric and moved to Schenectady,
+    New York, where he married his college sweetheart Lucile Salter in 1938.
+    But he and Bill stayed in touch. The two were encouraged by their former professor Fred Terman
+    to start a technology company of their own.
+    Taking a leave of absence from his job at GE, Dave and his new bride drove to California with
+    a used drill press (an important piece of equipment for the new venture) in the rumble seat.
+    Bill scouted for places where the newlyweds could live. He found the ideal rental at 367 Addison
+    Avenue in Palo Alto for $45 per month. Dave and Lucile would live in the downstairs flat,
+    while Bill would bunk in a tiny backyard shed where there was indoor plumbing and just enough
+    room for a cot. But what made the property truly perfect for their needs was the
+    small garage that the landlady told them they could use as a workshop.
     """
     
     # Create learner (no domain-specific configuration!)
