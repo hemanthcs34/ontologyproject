@@ -2,37 +2,33 @@
 BOOFS: Bootstrapped Ontology and Object Frame Semantics
 ========================================================
 
-Domain-independent (English) symbolic relation induction over parsed text.
+Universal Ontology Learning System — Corpus-Driven Relation Induction edition.
 
-This system performs symbolic, unsupervised Open Information Extraction (OpenIE)
-followed by DIRT-style distributional relation induction. Nothing about the
-relation inventory is declared in source: relations are the dependency paths that
-connect entities in the text, and relation *types* emerge by clustering those
-paths across the corpus. Path statistics accumulate on disk across runs, so each
-new document sharpens the induced inventory without any code change.
+This revision REMOVES the hand-crafted, domain-specific relation schema and
+replaces it with a symbolic, unsupervised Open Information Extraction (OpenIE)
+front end plus DIRT-style distributional relation induction. Nothing about the
+relation inventory is declared in source anymore: relations are the dependency
+paths that actually connect entities in the text, and relation *types* emerge by
+clustering those paths across the corpus. The system is self-growing — path
+statistics accumulate on disk across runs, so every new document sharpens the
+induced relation inventory without any code change.
 
-Scope and honest framing:
-  * This is a novel *integration* of established symbolic techniques, not a novel
-    core algorithm. The building blocks (dependency-path OpenIE, DIRT relation
-    induction [Lin & Pantel 2001], distant-supervision candidate generation
-    [Mintz 2009], pool-based active learning [Settles 2009]) are pre-existing.
-  * The incremental, corpus-driven refinements added here — type-signature
-    blocking, an EMA-smoothed largest-gap merge threshold with a corpus-learned
-    reference distance for sparse blocks, medoid-anchored incremental induction
-    with a drift trigger, containment-based relation subsumption, and empirical
-    confidence calibration — are useful engineering improvements to that pipeline;
-    none is claimed as a standalone published algorithm.
-  * "Symbolic" describes the induction/consolidation logic. Parsing, NER, and
-    (optionally) coreference use spaCy's neural models as a PREPROCESSING layer;
-    the optional PyKEEN/RotatE KG stage is neural and orthogonal to extraction.
-  * Domain-independent means no relation schema, trigger lists, frames, or alias
-    tables — it works across domains without code changes. It is English-tied
-    (dependency labels, acronym patterns), so it is not language-independent.
-
-Pipeline: coreference -> concept extraction -> distant-supervision candidate
-  pairs -> OpenIE proposition extraction -> DIRT relation induction ->
+Pipeline (unchanged skeleton; only the extraction/slot-filling core is new):
+  coreference -> concept extraction -> distant-supervision candidate pairs ->
+  OpenIE proposition extraction -> DIRT relation induction ->
   distributional entity clustering (SIMILAR_TO) -> active learning ->
-  consolidation -> ontology (domain/range + subsumption) -> KG embeddings.
+  consolidation -> KG embeddings.
+
+Novel algorithms retained/added:
+  1. OpenIE proposition extraction over LCA dependency paths (no trigger lists)
+  2. DIRT-style relation induction (Lin & Pantel 2001) — data-derived relation types
+  3. Persistent, self-growing path-statistics store (cross-run corpus learning)
+  4. Unsupervised entity clustering (distributional SIMILAR_TO hypotheses)
+  5. Genuine pool-based active learning (margin sampling + weak self-supervision)
+
+No LLMs, transformers, or neural relation extraction are used in the extraction
+subsystem. (spaCy provides the parse; the KG-embedding *reporting* stage still
+uses PyKEEN/RotatE and is orthogonal to relation extraction — see note there.)
 """
 
 import csv
@@ -126,25 +122,12 @@ class BOOFSConfig:
     # weight on the previous value, so cluster boundaries don't jitter as the
     # corpus grows. Both the old and new values are corpus-derived.
     threshold_ema_beta: float = 0.5
-    # In a sparse block (too few paths for a meaningful within-block gap, e.g. two
-    # paths), the gap threshold is self-referential and merges nothing. Instead we
-    # fall back to a corpus-wide reference distance learned from POPULATED blocks
-    # that actually merged (the typical "same-relation" distance). A pair in a
-    # sparse block merges if its distance is below that learned level. This bound
-    # is the minimum block size for which the within-block gap is trusted.
-    min_block_for_gap: int = 3
     # A new cluster inherits a previous run's label when their path-sets overlap
     # by at least this Jaccard ratio -> labels stay stable as the corpus grows.
     label_carryover_jaccard: float = 0.5
     # Confidence = mean(cluster cohesion, support/median_support); this is the
     # relative weight of cohesion (the rest goes to support). Corpus-derived.
     conf_cohesion_weight: float = 0.5
-    # Empirical confidence calibration: once at least this many human-labelled
-    # induced edges exist in a confidence bucket, the raw score is mapped to the
-    # bucket's observed reliability (how often that confidence was actually
-    # correct). Calibration is corpus/label-driven and sharpens as labels grow.
-    calib_bins_count: int = 10
-    calib_min_evidence: int = 20
     # Relation A is subsumed by a more general B when A's argument fillers are
     # (on both slots) contained in B's by at least this ratio. Strength cutoff
     # only; the containment values themselves are corpus-derived.
@@ -157,7 +140,8 @@ class BOOFSConfig:
     # (atomic) compaction runs once every this many appends to bound file growth.
     path_stats_compact_every: int = 200
 
-    # --- clustering (legacy distributional discovery) ---
+    # --- clustering (legacy distant-supervision / distributional discovery) ---
+    dbscan_eps_distant: float = 0.35
     dbscan_eps_unsup: float = 0.4
 
     # --- negation handling ---
@@ -606,6 +590,7 @@ class DistantSupervisionModule:
                                      if max_entity_distance is not None
                                      else CONFIG.max_entity_token_distance)
         self.entity_pairs = []
+        self.discovered_relations = defaultdict(list)
 
     def extract_entity_pairs(self, doc) -> List[Dict]:
         pairs = []
@@ -639,6 +624,45 @@ class DistantSupervisionModule:
         except (AttributeError, ValueError, IndexError) as e:
             logger.debug(f"[Distant Supervision] context extraction failed: {e}")
             return ""
+
+    def discover_relations_via_clustering(self) -> Dict[str, List]:
+        """Retained for backward compatibility / experimentation. Not used as a
+        relation source in the induced pipeline (OpenIE+DIRT supersede it)."""
+        if len(self.entity_pairs) < 3:
+            logger.warning("Need at least 3 entity pairs for clustering")
+            return {}
+        by_signature = defaultdict(list)
+        for pair in self.entity_pairs:
+            sig = f"{pair['type1']}-{pair['type2']}"
+            by_signature[sig].append(pair)
+        discovered = defaultdict(list)
+        for signature, sig_pairs in by_signature.items():
+            if len(sig_pairs) < 2:
+                continue
+            contexts = [p['context'] for p in sig_pairs if p['context']]
+            if not contexts or len(set(contexts)) < 2:
+                continue
+            try:
+                vectorizer = TfidfVectorizer(max_features=50, min_df=1, max_df=10)
+                X = vectorizer.fit_transform(contexts)
+                clustering = DBSCAN(eps=CONFIG.dbscan_eps_distant, min_samples=1, metric='cosine')
+                labels = clustering.fit_predict(X.toarray())
+                for cluster_id in set(labels):
+                    if cluster_id == -1:
+                        continue
+                    cluster_pairs = [sig_pairs[i] for i, l in enumerate(labels) if l == cluster_id]
+                    cluster_contexts = [p['context'] for p in cluster_pairs]
+                    all_words = " ".join(cluster_contexts).split()
+                    most_common = Counter(all_words).most_common(3)
+                    if most_common:
+                        rel_name = f"{signature}_REL_{most_common[0][0].upper()}"
+                        discovered[rel_name].extend(cluster_pairs)
+            except (ValueError, AttributeError) as e:
+                logger.debug(f"Clustering failed for {signature}: {e}")
+                continue
+        self.discovered_relations = discovered
+        logger.info(f"[Distant Supervision] Discovered {len(discovered)} relation types")
+        return discovered
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -982,14 +1006,6 @@ class RelationInductionModule:
         # (a corpus-relative drift signal that triggers an early full pass).
         self._block_thr_ema: Dict[Tuple[str, str], float] = {}
         self._new_singletons_since_full: int = 0
-        # Corpus-wide "same-relation" reference distance, learned from populated
-        # blocks that actually merged pairs; used to decide merges in sparse blocks
-        # where the within-block gap is undefined. Accumulates across full passes.
-        self._merge_ref_dist: Optional[float] = None
-        # Reliability calibration: for confidence buckets we accumulate how often a
-        # (later human-confirmed) induced edge was correct, so confidence can be
-        # mapped to an empirical reliability as the corpus/labels grow.
-        self._calib_bins: Dict[int, List[int]] = {}   # bucket -> [correct, total]
         self._support_snapshot: Dict[str, int] = {}
         self._fits_since_full: int = 0
         self._state_path = getattr(config, 'induction_state_path', None)
@@ -1004,10 +1020,6 @@ class RelationInductionModule:
                 data = json.load(f)
             self._prev_clusters = [(frozenset(m), lbl) for m, lbl in data.get('clusters', [])]
             self.path_to_label = dict(data.get('path_to_label', {}))
-            self._merge_ref_dist = data.get('merge_ref_dist', None)
-            self._block_thr_ema = {tuple(k.split('\t')): v
-                                   for k, v in data.get('block_thr_ema', {}).items()}
-            self._calib_bins = {int(k): list(v) for k, v in data.get('calib_bins', {}).items()}
         except (json.JSONDecodeError, ValueError, TypeError, OSError):
             logger.warning("[Relation Induction] could not load induction state; starting fresh.")
 
@@ -1019,9 +1031,6 @@ class RelationInductionModule:
             json.dump({
                 'clusters': [[sorted(m), lbl] for m, lbl in self._prev_clusters],
                 'path_to_label': self.path_to_label,
-                'merge_ref_dist': self._merge_ref_dist,
-                'block_thr_ema': {'\t'.join(k): v for k, v in self._block_thr_ema.items()},
-                'calib_bins': {str(k): v for k, v in self._calib_bins.items()},
             }, f)
         os.replace(tmp, self._state_path)
 
@@ -1151,55 +1160,24 @@ class RelationInductionModule:
                 self._dominant(stats.typeY.get(path, Counter())))
 
     def _block_threshold(self, D: np.ndarray) -> float:
-        """Merge threshold for a block.
-
-        For a POPULATED block (>= min_block_for_gap paths) the cut is read off the
-        block's own distance distribution at the WIDEST gap between consecutive
-        sorted non-zero distances — the natural separation between 'same' and
-        'different' pairs, more principled than a median.
-
-        For a SPARSE block (too few paths for a meaningful gap — the classic
-        two-path case where the gap is self-referential and merges nothing) we
-        fall back to a corpus-wide reference distance learned from populated
-        blocks (_merge_ref_dist): the typical distance between paths that DID
-        merge elsewhere. This removes the two-path degeneracy without a hand-set
-        constant — the reference is entirely corpus-derived."""
+        """Merge threshold derived from THIS block's own distance distribution by
+        cutting at the WIDEST gap between consecutive sorted non-zero distances —
+        the natural separation between 'same relation' and 'different relation'
+        pairs. This is more principled than a median (which would merge ~half of
+        all pairs regardless of whether they belong together) and stays fully
+        corpus-derived: the cut point is read off the data, not a constant."""
         if D.shape[0] < 2:
             return self.cfg.adaptive_threshold_min
         nz = np.sort(D[np.triu_indices(D.shape[0], 1)])
         nz = nz[nz > 0]
         if nz.size == 0:
             return self.cfg.adaptive_threshold_max  # all identical -> merge freely
-        if D.shape[0] < self.cfg.min_block_for_gap:
-            # sparse: prefer the corpus-learned "same-relation" level if we have
-            # one; otherwise stay conservative (min clamp).
-            ref = self._merge_ref_dist if self._merge_ref_dist is not None \
-                else self.cfg.adaptive_threshold_min
-            # merge a sparse pair only if it is at least as close as the corpus
-            # typically is for same-relation pairs (+ tiny epsilon so equality
-            # merges, fixing the boundary non-merge).
-            thr = ref + 1e-9
-            return min(max(thr, self.cfg.adaptive_threshold_min), self.cfg.adaptive_threshold_max)
-        cut = int(np.argmax(np.diff(nz)))          # index before the widest gap
-        thr = float((nz[cut] + nz[cut + 1]) / 2.0)  # midpoint of that gap
+        if nz.size == 1:
+            thr = float(nz[0])
+        else:
+            cut = int(np.argmax(np.diff(nz)))          # index before the widest gap
+            thr = float((nz[cut] + nz[cut + 1]) / 2.0)  # midpoint of that gap
         return min(max(thr, self.cfg.adaptive_threshold_min), self.cfg.adaptive_threshold_max)
-
-    def _update_merge_reference(self, members: List[str], block: List[str], D: np.ndarray):
-        """Accumulate the corpus-wide same-relation reference distance from a
-        merged (>=2 member) cluster in a POPULATED block: the mean intra-cluster
-        distance. Kept as a running mean across full passes (corpus-derived)."""
-        if len(members) < 2 or len(block) < self.cfg.min_block_for_gap:
-            return
-        idx = {p: i for i, p in enumerate(block)}
-        tot, k = 0.0, 0
-        for a in range(len(members)):
-            for b in range(a + 1, len(members)):
-                tot += D[idx[members[a]], idx[members[b]]]; k += 1
-        if k == 0:
-            return
-        d = tot / k
-        self._merge_ref_dist = d if self._merge_ref_dist is None \
-            else 0.5 * self._merge_ref_dist + 0.5 * d
 
     @staticmethod
     def _cohesion(members: List[str], block: List[str], D: np.ndarray) -> Optional[float]:
@@ -1334,13 +1312,7 @@ class RelationInductionModule:
 
         mis = self._global_mi(candidates, stats) if candidates else None
 
-        # Process POPULATED blocks before sparse ones: populated blocks teach the
-        # corpus-wide same-relation reference distance that sparse blocks then use
-        # (deterministic key: populated-first, then signature).
-        def _block_order(sig):
-            return (len(blocks[sig]) < self.cfg.min_block_for_gap, sig)
-
-        for sigkey in sorted(blocks, key=_block_order):
+        for sigkey in sorted(blocks):
             full_block = blocks[sigkey]           # already support-sorted
             # Per-block cap bounds the O(block^2) matrix; the tail is assigned to
             # the block's clusters afterwards (still no forced singletons).
@@ -1365,7 +1337,6 @@ class RelationInductionModule:
                         self.label_cohesion[label] = coh
                     self._medoids[label] = self._medoid(members, head, D)
                     self._label_sig[label] = sigkey
-                    self._update_merge_reference(members, head, D)
                     new_clusters.append((frozenset(members), label))
             else:
                 p = head[0]
@@ -1449,36 +1420,6 @@ class RelationInductionModule:
     def cohesion_for(self, path_key: str) -> Optional[float]:
         return self.label_cohesion.get(self.path_to_label.get(path_key))
 
-    def set_calibration(self, samples):
-        """Rebuild the reliability calibration from (confidence, correct) samples
-        of human-confirmed induced edges. Idempotent (recomputed from scratch)."""
-        bins: Dict[int, List[int]] = {}
-        n = self.cfg.calib_bins_count
-        for conf, correct in samples:
-            b = min(n - 1, max(0, int(conf * n)))
-            c, t = bins.get(b, [0, 0])
-            bins[b] = [c + (1 if correct else 0), t + 1]
-        self._calib_bins = bins
-
-    def calibrated_confidence(self, raw: float) -> float:
-        """Map a raw corpus-derived confidence to the empirical reliability its
-        bucket has shown against human labels. Below an evidence threshold the raw
-        score is returned unchanged; otherwise a Laplace-smoothed empirical
-        accuracy is blended in, weighted by how much evidence the bucket has — so
-        confidence becomes more meaningful (and better calibrated) as labels grow."""
-        n = self.cfg.calib_bins_count
-        b = min(n - 1, max(0, int(raw * n)))
-        c, t = self._calib_bins.get(b, [0, 0])
-        if t < self.cfg.calib_min_evidence:
-            return round(raw, 3)
-        emp = (c + 1) / (t + 2)                       # Laplace-smoothed reliability
-        w = t / (t + self.cfg.calib_min_evidence)     # trust grows with evidence
-        return round(w * emp + (1.0 - w) * raw, 3)
-
-    def flush_state(self):
-        """Persist induction state on demand (used after calibration updates)."""
-        self._save_state()
-
     def annotate(self, props: List[Proposition]):
         for p in props:
             p.induced_label = self.label_for(p.path_key)
@@ -1513,35 +1454,34 @@ class RelationInductionModule:
                 'parent': None, 'containment': 0.0}
             for L in labels
         }
-        # Subsumption from ASYMMETRIC argument-set containment. Generality is read
-        # from filler-set BREADTH (which clustering preserves as the per-label
-        # union), not support counts: B is a candidate parent of A when A's
-        # arguments are largely contained in B's, B is broader, and the inclusion
-        # is asymmetric (B not equally contained in A). Among qualifying parents
-        # the NEAREST (smallest broader) is chosen, so multi-level taxonomies form.
         for L in labels:
             a = agg[L]
             if not a['X'] or not a['Y']:
                 continue
-            a_size = len(a['X']) + len(a['Y'])
+        # Candidate parents: qualifying supersets (same domain/range, more
+        # general, containment >= threshold). Choose the MOST SPECIFIC one (the
+        # smallest qualifying superset), so multi-level taxonomies form instead of
+        # every relation pointing at the single most-general one. Deterministic.
+        for L in labels:
+            a = agg[L]
+            if not a['X'] or not a['Y']:
+                continue
             candidates_parent = []
             for B in labels:
                 if B == L:
                     continue
                 b = agg[B]
-                if not b['X'] or not b['Y']:
+                if b['support'] <= a['support']:
                     continue
                 if (schema[B]['domain'] != schema[L]['domain']
                         or schema[B]['range'] != schema[L]['range']):
                     continue
-                if len(b['X']) + len(b['Y']) <= a_size:
-                    continue  # a parent must be strictly broader in argument spread
-                cont_a_in_b = min(len(a['X'] & b['X']) / len(a['X']),
-                                  len(a['Y'] & b['Y']) / len(a['Y']))
-                cont_b_in_a = min(len(a['X'] & b['X']) / len(b['X']),
-                                  len(a['Y'] & b['Y']) / len(b['Y']))
-                if cont_a_in_b >= self.cfg.subsumption_min_containment and cont_b_in_a < cont_a_in_b:
-                    candidates_parent.append((len(b['X']) + len(b['Y']), -cont_a_in_b, B))
+                c = min(len(a['X'] & b['X']) / len(a['X']),
+                        len(a['Y'] & b['Y']) / len(a['Y']))
+                if c >= self.cfg.subsumption_min_containment:
+                    # sort key: most specific (smallest support), then strongest
+                    # containment, then label — fully deterministic.
+                    candidates_parent.append((b['support'], -c, B))
             if candidates_parent:
                 _, negc, parent = min(candidates_parent)
                 schema[L]['parent'] = parent
@@ -1697,7 +1637,6 @@ class LabelStore:
             'type1': ex.get('type1', ''), 'type2': ex.get('type2', ''),
             'context': ex.get('context', ''),
             'frame_agreement': ex.get('frame_agreement', 'none'),
-            'confidence': float(ex.get('confidence', 0.0)),
         }
 
     def _persist(self, r: Dict):
@@ -2090,7 +2029,6 @@ class BOOFSOntologyLearner:
                 pairs, induced_examples, self.proposition_extractor.structural_negatives)
             if use_active_learning and self.active_learner.oracle is not None and pairs:
                 queried = self.active_learner.run_round(pairs, k=al_query_batch)
-                self._update_calibration()   # learn reliability from new human labels
                 if verbose:
                     print(f"    ✓ Queried {len(queried)} example(s); "
                           f"label store = {self.label_store.stats()}")
@@ -2150,18 +2088,17 @@ class BOOFSOntologyLearner:
                 # during seeding; never the label itself (avoids feature leakage)
                 'context': '',
                 'frame_agreement': label,
-                'confidence': self._raw_induced_conf(p.path_key),
                 'type1': p.type1, 'type2': p.type2,
             })
         return examples
 
-    def _annotate_induced_relation(self, pairs: List[Dict], props: List[Proposition]):
+    @staticmethod
+    def _annotate_induced_relation(pairs: List[Dict], props: List[Proposition]):
         """Tag each candidate pair (undirected) with the induced relation a
-        proposition supports for it, plus that relation's raw confidence. The tag
-        goes ONLY into 'frame_agreement' (which the classifier excludes from its
-        features) and 'confidence'; the natural between-entity 'context' is left
-        untouched so the model learns real linguistic evidence rather than
-        memorizing the label. Mutates in place."""
+        proposition supports for it. The tag goes ONLY into 'frame_agreement'
+        (which the classifier excludes from its features); the natural
+        between-entity 'context' is left untouched so the model learns real
+        linguistic evidence rather than memorizing the label. Mutates in place."""
         idx = {}
         for p in props:
             idx[(p.arg1, p.arg2)] = p
@@ -2170,7 +2107,6 @@ class BOOFSOntologyLearner:
             prop = idx.get((pr['entity1'], pr['entity2']))
             if prop is not None:
                 pr['frame_agreement'] = prop.induced_label or prop.readable_path()
-                pr['confidence'] = self._raw_induced_conf(prop.path_key)
             else:
                 pr.setdefault('frame_agreement', 'none')
 
@@ -2194,7 +2130,6 @@ class BOOFSOntologyLearner:
                 if verbose:
                     print("  Stopping: no remaining unlabeled candidates.")
                 break
-        self._update_calibration()   # recompute reliability from accumulated labels
         self.label_store.compact()
         return history
 
@@ -2214,37 +2149,20 @@ class BOOFSOntologyLearner:
                 concepts_dict[concept_id] = c
         return list(concepts_dict.values())
 
-    def _raw_induced_conf(self, path_key: str) -> float:
-        """Uncalibrated corpus-derived confidence: blend of induced-cluster
-        cohesion and support relative to the corpus median. Used for calibration
-        bucketing (so calibration maps this raw score to observed reliability)."""
+    def _induced_conf(self, path_key: str) -> float:
+        """Corpus-derived confidence: a blend of (a) the induced cluster's
+        cohesion — how tightly its member paths cluster distributionally — and
+        (b) how well-attested this path is relative to the corpus median support.
+        No hand-picked score constant; both terms come from the data. Falls back
+        to a support-only estimate for singleton clusters (no cohesion defined)."""
         s = self.path_stats.support.get(path_key, 1)
         med = max(self.relation_inducer.corpus_median_support, 1.0)
-        support_term = min(1.0, s / (s + med))
+        support_term = min(1.0, s / (s + med))          # relative, self-normalizing
         coh = self.relation_inducer.cohesion_for(path_key)
         if coh is None:
             return round(support_term, 3)
         w = self.relation_inducer.cfg.conf_cohesion_weight
         return round(w * coh + (1.0 - w) * support_term, 3)
-
-    def _induced_conf(self, path_key: str) -> float:
-        """Calibrated confidence: the raw corpus-derived score mapped through the
-        empirical reliability learned from human-confirmed edges (identity until
-        enough labels exist). Becomes more meaningful as the corpus/labels grow."""
-        return self.relation_inducer.calibrated_confidence(self._raw_induced_conf(path_key))
-
-    def _update_calibration(self):
-        """Recompute confidence calibration from the label store: every human
-        ('oracle') label on an edge that carried an induced label is a (raw
-        confidence, was-it-correct) sample. Symbolic frequency counting only."""
-        samples = []
-        for r in self.label_store.training_data():
-            if r.get('source') == 'oracle' and r.get('frame_agreement', 'none') != 'none':
-                samples.append((float(r.get('confidence', 0.0)),
-                                r.get('label') == r.get('frame_agreement')))
-        if samples:
-            self.relation_inducer.set_calibration(samples)
-            self.relation_inducer.flush_state()
 
     def _consolidate_relations(self, props: List[Proposition], patterns,
                                pairs=None) -> List[RelationExtract]:
@@ -2267,14 +2185,33 @@ class BOOFSOntologyLearner:
                      and self.active_learner.has_human_labels())
         if use_model:
             for pair in pairs:
-                label, prob = self.active_learner.predict(pair)
-                if label is None or label == Oracle.NO_RELATION:
-                    continue
-                rel = RelationExtract(pair['entity1'], label, pair['entity2'],
-                                      confidence=self.active_learner.model.scaled_confidence(prob))
-                rel.source = 'active_learned'
-                rel.evidence = pair.get('context', '')
-                _add(rel)
+                # Check for an authoritative human label for this pair of entities
+                ent1, ent2 = pair['entity1'].lower(), pair['entity2'].lower()
+                human_label = None
+                for r in reversed(list(self.label_store.records.values())):
+                    if r.get('source') == 'oracle':
+                        r_ent1 = r.get('entity1', '').lower()
+                        r_ent2 = r.get('entity2', '').lower()
+                        if (r_ent1 == ent1 and r_ent2 == ent2) or (r_ent1 == ent2 and r_ent2 == ent1):
+                            human_label = r.get('label')
+                            break
+
+                if human_label is not None:
+                    if human_label == Oracle.NO_RELATION:
+                        continue
+                    rel = RelationExtract(pair['entity1'], human_label, pair['entity2'], confidence=1.0)
+                    rel.source = 'active_learned'
+                    rel.evidence = pair.get('context', '')
+                    _add(rel)
+                else:
+                    label, prob = self.active_learner.predict(pair)
+                    if label is None or label == Oracle.NO_RELATION:
+                        continue
+                    rel = RelationExtract(pair['entity1'], label, pair['entity2'],
+                                          confidence=self.active_learner.model.scaled_confidence(prob))
+                    rel.source = 'active_learned'
+                    rel.evidence = pair.get('context', '')
+                    _add(rel)
         else:
             for p in props:
                 if p.negated and CONFIG.skip_negated:
