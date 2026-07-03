@@ -25,28 +25,22 @@ python -m spacy download en_core_web_sm
 
 ## Run
 
-```bash
 streamlit run app.py
-```
 
 This opens a browser tab (usually `http://localhost:8501`). Paste your
 text (or click "Load example text" to try the original sample), click
 **Run BOOFS pipeline**, and browse results in the tabs:
-
 - **Concepts** — extracted entities/noun phrases with type & confidence
 - **Relations** — consolidated (subject, relation, object) triples
 - **Frames** — frame-semantic slot fills per sentence
 - **Similarity hypotheses** — entity-similarity edges (not asserted relations)
 - **KG embeddings** — Hits@10 and similarity-quality metrics, if enough
   triples were extracted for embedding training
-
 Each table has a **Download CSV** button. A "Coreference resolution:
 before vs after" panel at the bottom lets you sanity-check what the
 resolver changed in your input.
 
 ## Notes
-
-- First run is slower while spaCy/PyKEEN warm up.
 - Active learning (the human-in-the-loop oracle labeling step) is left
   off in this UI, since it needs an interactive terminal oracle. Every
   other pipeline stage runs exactly as in the original script.
