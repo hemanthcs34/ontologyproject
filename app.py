@@ -1,191 +1,357 @@
+"""
+BOOFS Pipeline — Flask Web Frontend
+====================================
 
+Wraps the existing finalaaryacode.py pipeline with a web UI.
+No modifications are made to finalaaryacode.py — this file imports
+and orchestrates its classes as-is.
+"""
+
+import sys
+import os
 import io
-import time
+import logging
 import traceback
 
-import pandas as pd
-import streamlit as st
+# ── Fix Windows console encoding ─────────────────────────────
+# finalaaryacode.py prints Unicode characters (✓, 📦, 🔗, etc.) via verbose
+# print() calls. On Windows, the default console encoding (CP1252) cannot
+# encode these, causing UnicodeEncodeError. We reconfigure stdout/stderr to
+# use UTF-8 with error replacement so these prints succeed silently.
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+if sys.stderr.encoding and sys.stderr.encoding.lower() not in ('utf-8', 'utf8'):
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
-import aarya_boofs as boofs
+from flask import Flask, render_template, request, jsonify
 
-st.set_page_config(page_title="BOOFS Ontology Learner", layout="wide")
+# ── Ensure the project directory is on sys.path ──────────────
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
 
-EXAMPLE_TEXT = """Bill and Dave became friends when they were both engineering students at Stanford.
-After graduation, Dave took a job with General Electric and moved to Schenectady,
-New York, where he married his college sweetheart Lucile Salter in 1938.
-But he and Bill stayed in touch. The two were encouraged by their former professor Fred Terman
-to start a technology company of their own.
-Taking a leave of absence from his job at GE, Dave and his new bride drove to California with
-a used drill press (an important piece of equipment for the new venture) in the rumble seat.
-Bill scouted for places where the newlyweds could live. He found the ideal rental at 367 Addison
-Avenue in Palo Alto for $45 per month. Dave and Lucile would live in the downstairs flat,
-while Bill would bunk in a tiny backyard shed where there was indoor plumbing and just enough
-room for a cot. But what made the property truly perfect for their needs was the
-small garage that the landlady told them they could use as a workshop."""
-
-
-def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    return buf.getvalue().encode("utf-8")
-
-
-# ── Session state ────────────────────────────────────────────────────────────
-if "input_text" not in st.session_state:
-    st.session_state.input_text = ""
-if "results" not in st.session_state:
-    st.session_state.results = None
-
-# ── Sidebar: pipeline options ───────────────────────────────────────────────
-st.sidebar.header("Pipeline options")
-resolve_coref = st.sidebar.checkbox("Resolve coreference", value=True)
-enable_relation_model = st.sidebar.checkbox(
-    "Enable learned relation model", value=True,
-    help="Seeds a lightweight classifier from BOOFS's own frames and uses it "
-         "to filter/label candidate relations during consolidation."
-)
-verbose_logs = st.sidebar.checkbox("Show pipeline log output", value=False)
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Active learning (human-in-the-loop labeling) is left off in this UI — "
-    "it requires an interactive oracle. Everything else in the 7-stage "
-    "pipeline runs as normal."
+# ── Import BOOFS classes from finalaaryacode ─────────────────
+from finalaaryacode import (
+    BOOFSOntologyLearner,
+    DictOracle,
+    Oracle,
+    ActiveLearningModule,
+    evaluate_coreference_improvement,
+    evaluate_relation_precision,
+    evaluate_hits_at_k,
+    evaluate_entity_similarity_quality,
 )
 
-# ── Main layout ──────────────────────────────────────────────────────────────
-st.title("BOOFS: Ontology & Object Frame Semantics")
-st.caption("Paste text below, then run the pipeline to extract concepts, relations, and frames.")
+# ── Flask app ────────────────────────────────────────────────
+app = Flask(__name__, template_folder='templates', static_folder='static')
+app.config['JSON_SORT_KEYS'] = False
 
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    if st.button("Load example text"):
-        st.session_state.input_text = EXAMPLE_TEXT
-with col_b:
-    if st.button("Clear"):
-        st.session_state.input_text = ""
-        st.session_state.results = None
+logger = logging.getLogger(__name__)
 
-text_input = st.text_area(
-    "Sample text",
-    value=st.session_state.input_text,
-    height=260,
-    placeholder="Paste your text here...",
-    key="input_text",
-)
+# ── Default sample text (same as in finalaaryacode.py __main__) ──
+DEFAULT_SAMPLE_TEXT = """
+    Bill and Dave became friends when they were both engineering students at Stanford.
+    After graduation, Dave took a job with General Electric and moved to Schenectady,
+    New York, where he married his college sweetheart Lucile Salter in 1938.
+    But he and Bill stayed in touch. The two were encouraged by their former professor Fred Terman
+    to start a technology company of their own.
+    Taking a leave of absence from his job at GE, Dave and his new bride drove to California with
+    a used drill press in the rumble seat.
+    Bill scouted for places where the newlyweds could live. He found the ideal rental at 367 Addison
+    Avenue in Palo Alto for $45 per month.
+"""
 
-run_clicked = st.button("▶ Run BOOFS pipeline", type="primary", disabled=not text_input.strip())
+DEFAULT_GOLD = {
+    ('dave', 'general electric'): 'WORKS_FOR',
+    ('dave', 'ge'): 'WORKS_FOR',
+    ('dave', 'stanford'): 'STUDIED_AT',
+    ('bill', 'stanford'): 'STUDIED_AT',
+}
 
-if run_clicked:
-    log_box = st.empty()
-    with st.spinner("Running the 7-stage pipeline (this can take a little while, especially "
-                     "the first run while spaCy / KG embedding models warm up)..."):
-        try:
-            learner = boofs.BOOFSOntologyLearner()
-            start = time.time()
+# ── In-memory learner state ─────────────────────────────────
+# Held as a module-level singleton so active learning state persists
+# across HTTP requests within a server session.
+_learner = None
+_last_text_hash = None
 
-            if verbose_logs:
-                import contextlib
-                buf = io.StringIO()
-                with contextlib.redirect_stdout(buf):
-                    results = learner.process(
-                        text_input,
-                        use_active_learning=False,
-                        verbose=True,
-                        resolve_coreference=resolve_coref,
-                        enable_relation_model=enable_relation_model,
-                    )
-                log_box.code(buf.getvalue())
-            else:
-                results = learner.process(
-                    text_input,
-                    use_active_learning=False,
-                    verbose=False,
-                    resolve_coreference=resolve_coref,
-                    enable_relation_model=enable_relation_model,
-                )
 
-            elapsed = time.time() - start
-            st.session_state.results = {
-                "learner": learner,
-                "results": results,
-                "elapsed": elapsed,
+def _get_learner(force_new=False):
+    """Return the current learner, creating a fresh one if needed."""
+    global _learner
+    if _learner is None or force_new:
+        _learner = BOOFSOntologyLearner()
+    return _learner
+
+
+def _serialize_results(learner, results):
+    """Convert pipeline results into a JSON-safe dictionary."""
+
+    concepts = [c.to_dict() for c in learner.concepts]
+    relations = [r.to_dict() for r in learner.relations]
+
+    propositions = []
+    for p in learner.propositions:
+        d = p.to_dict()
+        propositions.append({
+            'arg1': d['arg1'],
+            'type1': d['type1'],
+            'relation': d['relation'],
+            'path_key': d['path_key'],
+            'arg2': d['arg2'],
+            'type2': d['type2'],
+            'negated': d['negated'],
+            'sentence': d['sentence'],
+        })
+
+    # induced relation types
+    induced_types = results.get('induced_relation_types', [])
+
+    # relation schema
+    schema = {}
+    raw_schema = results.get('relation_schema', {})
+    for name, info in raw_schema.items():
+        entry = {}
+        if isinstance(info, dict):
+            entry = {
+                'domain': info.get('domain'),
+                'range': info.get('range'),
+                'parent': info.get('parent'),
+                'confidence': info.get('confidence'),
             }
-            st.success(f"Done in {elapsed:.1f}s")
-        except Exception as e:
-            st.error(f"Pipeline failed: {e}")
-            st.code(traceback.format_exc())
-            st.session_state.results = None
+        schema[name] = entry
 
-# ── Results ──────────────────────────────────────────────────────────────────
-if st.session_state.results:
-    learner = st.session_state.results["learner"]
-    results = st.session_state.results["results"]
+    # evaluation metrics
+    evaluation = {}
+    try:
+        evaluation['coreference'] = evaluate_coreference_improvement(
+            learner.raw_text, learner.resolved_text)
+    except Exception as e:
+        logger.warning(f"Coreference evaluation failed: {e}")
 
-    concepts_df = pd.DataFrame([c.to_dict() for c in learner.concepts])
-    relations_df = pd.DataFrame([r.to_dict() for r in learner.relations])
-    sim_df = pd.DataFrame([r.to_dict() for r in learner.similarity_hypotheses])
+    try:
+        evaluation['relation_precision'] = evaluate_relation_precision(
+            learner.relations, learner.relations)
+    except Exception as e:
+        logger.warning(f"Relation precision evaluation failed: {e}")
 
-    frame_rows = []
-    for frame in learner.frames:
-        for slot_name, (slot_value, confidence) in frame.slots.items():
-            frame_rows.append({
-                "frame_type": frame.frame_type,
-                "trigger": frame.trigger,
-                "slot_name": slot_name,
-                "slot_value": slot_value,
-                "confidence": round(confidence, 3),
-                "negated": frame.negated,
-            })
-    frames_df = pd.DataFrame(frame_rows)
+    try:
+        evaluation['hits_at_10'] = evaluate_hits_at_k(learner.kg_embedder, k=10)
+    except Exception as e:
+        logger.warning(f"Hits@10 evaluation failed: {e}")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Concepts", len(learner.concepts))
-    m2.metric("Relations", len(learner.relations))
-    m3.metric("Frames", len(learner.frames))
-    m4.metric("Similarity hypotheses", len(learner.similarity_hypotheses))
+    try:
+        evaluation['entity_similarity'] = evaluate_entity_similarity_quality(
+            learner.kg_embedder)
+    except Exception as e:
+        logger.warning(f"Entity similarity evaluation failed: {e}")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Concepts", "Relations", "Frames", "Similarity hypotheses", "KG embeddings"]
-    )
+    # active learning candidates (most uncertain pairs)
+    al_candidates = []
+    try:
+        pairs = learner.distant_supervisor.entity_pairs
+        if pairs:
+            uncertain = ActiveLearningModule.select_informative_examples(pairs, k=8)
+            al_candidates = [{
+                'entity1': p.get('entity1', ''),
+                'entity2': p.get('entity2', ''),
+                'type1': p.get('type1', ''),
+                'type2': p.get('type2', ''),
+                'context': p.get('context', ''),
+                'confidence': p.get('confidence', 0.5),
+            } for p in uncertain]
+    except Exception as e:
+        logger.warning(f"AL candidate selection failed: {e}")
 
-    with tab1:
-        st.dataframe(concepts_df, use_container_width=True)
-        if not concepts_df.empty:
-            st.download_button("Download concepts.csv", df_to_csv_bytes(concepts_df),
-                                "boofs_concepts.csv", "text/csv")
+    # pipeline stats
+    pipeline_stats = {
+        'path_store_paths': 0,
+        'path_store_support': 0,
+        'label_store_total': 0,
+        'model_fitted': False,
+    }
+    try:
+        ps = learner.path_stats.stats()
+        pipeline_stats['path_store_paths'] = ps.get('paths', 0)
+        pipeline_stats['path_store_support'] = ps.get('total_support', 0)
+    except Exception:
+        pass
+    try:
+        pipeline_stats['label_store_total'] = len(learner.label_store.training_data())
+    except Exception:
+        pass
+    try:
+        pipeline_stats['model_fitted'] = learner.relation_model.is_fitted
+    except Exception:
+        pass
 
-    with tab2:
-        st.dataframe(relations_df, use_container_width=True)
-        if not relations_df.empty:
-            st.download_button("Download relations.csv", df_to_csv_bytes(relations_df),
-                                "boofs_relations.csv", "text/csv")
+    return {
+        'concepts': concepts,
+        'relations': relations,
+        'propositions': propositions,
+        'induced_relation_types': induced_types,
+        'relation_schema': schema,
+        'evaluation': evaluation,
+        'al_candidates': al_candidates,
+        'pipeline_stats': pipeline_stats,
+    }
 
-    with tab3:
-        st.dataframe(frames_df, use_container_width=True)
-        if not frames_df.empty:
-            st.download_button("Download frames.csv", df_to_csv_bytes(frames_df),
-                                "boofs_frames.csv", "text/csv")
 
-    with tab4:
-        st.dataframe(sim_df, use_container_width=True)
-        if not sim_df.empty:
-            st.download_button("Download similarity_hypotheses.csv", df_to_csv_bytes(sim_df),
-                                "boofs_similarity_hypotheses.csv", "text/csv")
+# ═══════════════════════════════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════════════════════════════
 
-    with tab5:
-        kg = learner.kg_embedder
-        if kg is not None and getattr(kg, "is_trained", False):
-            st.write("Knowledge-graph embeddings trained successfully.")
-            hits10 = boofs.evaluate_hits_at_k(kg, k=10)
-            st.write(f"Hits@10: {hits10 if hits10 is not None else 'suppressed (graph too small for a valid held-out split)'}")
-            sim_quality = boofs.evaluate_entity_similarity_quality(kg)
-            st.json(sim_quality)
-        else:
-            st.info("No trained KG embeddings for this run (e.g. not enough triples, or training was skipped).")
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    st.markdown("---")
-    with st.expander("Coreference resolution: before vs after"):
-        colx, coly = st.columns(2)
-        colx.text_area("Raw text", learner.raw_text or "", height=200, disabled=True)
-        coly.text_area("Resolved text", learner.resolved_text or "", height=200, disabled=True)
+
+@app.route('/api/default-text', methods=['GET'])
+def get_default_text():
+    return jsonify({'text': DEFAULT_SAMPLE_TEXT.strip()})
+
+
+@app.route('/api/run', methods=['POST'])
+def run_pipeline():
+    """Run the full BOOFS pipeline on the submitted text."""
+    global _learner, _last_text_hash
+
+    data = request.get_json(force=True)
+    text = data.get('text', '').strip()
+    use_gold = data.get('use_gold', False)
+
+    if not text:
+        return jsonify({'error': 'No text provided.'}), 400
+
+    try:
+        # create a fresh learner for each new text
+        _learner = _get_learner(force_new=True)
+        _last_text_hash = hash(text)
+
+        # When use_gold is True, the DictOracle provides automatic labels for
+        # known entity pairs. When False, we disable interactive active learning
+        # entirely (otherwise CLIOracle.label() calls input(), blocking the server).
+        # In both cases, relation seeding from induction still runs.
+        oracle = DictOracle(DEFAULT_GOLD) if use_gold else None
+
+        results = _learner.process(
+            text,
+            use_active_learning=use_gold,   # only if we have an oracle
+            oracle=oracle,
+            verbose=False,                   # avoid print() encoding issues
+            enable_relation_model=True,
+            al_query_batch=5,
+        )
+
+        return jsonify(_serialize_results(_learner, results))
+
+    except Exception as e:
+        logger.error(f"Pipeline error: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/active-learn', methods=['POST'])
+def active_learn():
+    """Accept human labels and retrain the active learner."""
+    global _learner
+
+    if _learner is None:
+        return jsonify({'error': 'Run the pipeline first.'}), 400
+
+    data = request.get_json(force=True)
+    labels = data.get('labels', {})
+
+    if not labels:
+        return jsonify({'error': 'No labels provided.'}), 400
+
+    try:
+        pairs = _learner.distant_supervisor.entity_pairs
+
+        # apply each human label
+        for key, label_val in labels.items():
+            parts = key.split('|', 1)
+            if len(parts) != 2:
+                continue
+            e1, e2 = parts
+
+            # find the matching candidate pair
+            match = None
+            for p in pairs:
+                if p.get('entity1', '') == e1 and p.get('entity2', '') == e2:
+                    match = p
+                    break
+                if p.get('entity1', '') == e2 and p.get('entity2', '') == e1:
+                    match = p
+                    break
+
+            if match is None:
+                # build a minimal pair dict
+                match = {
+                    'entity1': e1,
+                    'entity2': e2,
+                    'type1': '',
+                    'type2': '',
+                    'context': '',
+                }
+
+            _learner.label_store.add(match, label_val.strip(), source='oracle')
+
+        # retrain
+        _learner.active_learner.retrain()
+
+        # reconsolidate relations with updated model
+        patterns = _learner.relation_discoverer.discovered_patterns
+        _learner.relations = _learner._consolidate_relations(
+            _learner.propositions, patterns, pairs=pairs)
+
+        # build response
+        relations = [r.to_dict() for r in _learner.relations]
+
+        # new AL candidates
+        al_candidates = []
+        try:
+            uncertain = ActiveLearningModule.select_informative_examples(pairs, k=8)
+            al_candidates = [{
+                'entity1': p.get('entity1', ''),
+                'entity2': p.get('entity2', ''),
+                'type1': p.get('type1', ''),
+                'type2': p.get('type2', ''),
+                'context': p.get('context', ''),
+                'confidence': p.get('confidence', 0.5),
+            } for p in uncertain]
+        except Exception:
+            pass
+
+        pipeline_stats = {
+            'path_store_paths': 0,
+            'label_store_total': len(_learner.label_store.training_data()),
+            'model_fitted': _learner.relation_model.is_fitted,
+        }
+        try:
+            ps = _learner.path_stats.stats()
+            pipeline_stats['path_store_paths'] = ps.get('paths', 0)
+        except Exception:
+            pass
+
+        return jsonify({
+            'relations': relations,
+            'al_candidates': al_candidates,
+            'pipeline_stats': pipeline_stats,
+        })
+
+    except Exception as e:
+        logger.error(f"Active learning error: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════
+
+if __name__ == '__main__':
+    print("\n" + "=" * 60)
+    print("  BOOFS Pipeline — Web UI")
+    print("  Open http://localhost:5000 in your browser")
+    print("=" * 60 + "\n")
+    app.run(debug=False, host='127.0.0.1', port=5000, threaded=True)
