@@ -1,20 +1,3 @@
-"""
-BOOFS Web UI
-============
-A thin Streamlit front-end around the BOOFS ontology-learning pipeline
-(aarya_boofs.py). Paste text into the box, click Run, and get the
-extracted concepts, relations, frames, and similarity hypotheses back
-as tables you can inspect and download as CSV.
-
-Run locally with:
-    pip install -r requirements.txt
-    python -m spacy download en_core_web_sm     # (or en_core_web_lg)
-    streamlit run app.py
-
-This does NOT run inside the Claude chat window — it needs spaCy,
-scikit-learn, and PyKEEN installed locally, so it's a normal Python/
-Streamlit app you run on your own machine.
-"""
 
 import io
 import time
