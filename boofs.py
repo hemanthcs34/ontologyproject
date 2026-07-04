@@ -198,11 +198,11 @@ try:
     _COREF_BACKEND = "fastcoref"
 except ImportError:
     try:
-        import spacy_experimental  
+        import spacy_experimental  # noqa: F401  # type: ignore
         _COREF_BACKEND = "spacy_experimental"
     except ImportError:
         try:
-            import neuralcoref  
+            import neuralcoref  # noqa: F401  # type: ignore
             _COREF_BACKEND = "neuralcoref"
         except ImportError:
             _COREF_BACKEND = None
