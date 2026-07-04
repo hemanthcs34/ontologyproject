@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOOFS Studio — Bootstrapped Ontology Learning</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+:root{
+  --bg:#F4F6F8; --surface:#FFFFFF; --surface2:#EDF1F4;
+  --ink:#1F2A33; --muted:#5C6B78; --line:#E1E7EC; --line2:#CBD5DD;
+  --accent:#2E7D74; --accent-soft:#E2F0EE; --accent-ink:#20574F;
+  --indigo:#5566B8; --indigo-soft:#E7EAF7;
+  --amber:#C4862B; --amber-soft:#F6ECDA;
+  --danger:#B3564E; --danger-soft:#F5E4E2;
+  --shadow:0 1px 2px rgba(31,42,51,.05), 0 6px 20px -8px rgba(31,42,51,.12);
+  --radius:12px;
+  --dotgrid: radial-gradient(circle, rgba(31,42,51,.075) 1px, transparent 1px);
+}
+[data-theme="dark"]{
+  --bg:#12181E; --surface:#1A222B; --surface2:#212B35;
+  --ink:#E7EDF2; --muted:#94A3B0; --line:#2A3641; --line2:#384653;
+  --accent:#4CA79C; --accent-soft:#1E3531; --accent-ink:#8CD0C6;
+  --indigo:#8391D8; --indigo-soft:#252B45;
+  --amber:#D9A254; --amber-soft:#3A2F1B;
+  --danger:#D07A72; --danger-soft:#3D2523;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -8px rgba(0,0,0,.5);
+  --dotgrid: radial-gradient(circle, rgba(231,237,242,.06) 1px, transparent 1px);
+}
+*{box-sizing:border-box; margin:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--ink);
+  background-image:var(--dotgrid); background-size:22px 22px;
+  font-size:14.5px; line-height:1.55;
+  transition:background-color .25s, color .25s;
+}
+@media (prefers-reduced-motion: reduce){ *{animation:none!important; transition:none!important} }
+h1,h2,h3,.display{font-family:'Sora',sans-serif}
+.mono{font-family:'IBM Plex Mono',monospace}
+button{font:inherit; cursor:pointer}
+a{color:var(--accent)}
+
+/* ── header ─────────────────────────────────────── */
+header{
+  position:sticky; top:0; z-index:60; backdrop-filter:blur(10px);
+  background:color-mix(in srgb, var(--bg) 82%, transparent);
+  border-bottom:1px solid var(--line);
+}
+.hwrap{max-width:1440px; margin:0 auto; padding:12px 24px; display:flex; align-items:center; gap:16px}
+.brand{display:flex; align-items:center; gap:12px}
+.brandmark{
+  font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:13px;
+  background:var(--accent-soft); color:var(--accent-ink);
+  border:1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding:6px 10px; border-radius:8px; letter-spacing:.02em; white-space:nowrap;
+}
+.brandmark .arr{color:var(--amber)}
+.brand h1{font-size:17px; font-weight:700; letter-spacing:-.01em}
+.brand small{display:block; color:var(--muted); font-family:'Inter'; font-weight:500; font-size:11.5px; letter-spacing:.04em}
+.hspacer{flex:1}
+.chip{
+  display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600;
+  padding:4px 10px; border-radius:999px; border:1px solid var(--line2); color:var(--muted); background:var(--surface);
+}
+.chip .dot{width:7px; height:7px; border-radius:50%; background:var(--muted)}
+.chip.ok .dot{background:var(--accent)}
+.iconbtn{
+  border:1px solid var(--line2); background:var(--surface); color:var(--ink);
+  width:34px; height:34px; border-radius:9px; display:inline-flex; align-items:center; justify-content:center;
+  transition:transform .12s, background .15s;
+}
+.iconbtn:hover{transform:translateY(-1px); background:var(--surface2)}
+
+/* ── layout ─────────────────────────────────────── */
+.wrap{max-width:1440px; margin:0 auto; padding:22px 24px 60px; display:grid; grid-template-columns:380px 1fr; gap:22px; align-items:start}
+@media (max-width:1020px){ .wrap{grid-template-columns:1fr} .rail{position:static} }
+.rail{position:sticky; top:74px; display:flex; flex-direction:column; gap:16px}
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:var(--shadow);
+}
+.card .cardhead{padding:14px 18px 0; display:flex; align-items:center; gap:10px}
+.card .cardhead h2{font-size:14px; font-weight:600}
+.card .cardbody{padding:14px 18px 18px}
+.eyebrow{font-size:10.5px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--muted)}
+
+/* input rail */
+textarea#inputText{
+  width:100%; min-height:230px; resize:vertical; border:1px solid var(--line2); border-radius:10px;
+  background:var(--surface2); color:var(--ink); padding:12px 14px; font:13px/1.6 'IBM Plex Mono',monospace;
+  transition:border-color .15s, box-shadow .15s;
+}
+textarea#inputText:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent)}
+.optrow{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px dashed var(--line)}
+.optrow:last-of-type{border-bottom:none}
+.optrow label{font-weight:500; font-size:13px}
+.optrow .hint{display:block; font-size:11.5px; color:var(--muted); font-weight:400}
+.switch{position:relative; width:38px; height:22px; flex:none}
+.switch input{opacity:0; width:0; height:0}
+.switch span{
+  position:absolute; inset:0; border-radius:999px; background:var(--line2); transition:background .18s;
+}
+.switch span::after{
+  content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%;
+  background:var(--surface); transition:transform .18s; box-shadow:0 1px 2px rgba(0,0,0,.25);
+}
+.switch input:checked + span{background:var(--accent)}
+.switch input:checked + span::after{transform:translateX(16px)}
+.switch input:focus-visible + span{outline:2px solid var(--accent); outline-offset:2px}
+
+.btn{
+  border:1px solid var(--line2); background:var(--surface); color:var(--ink);
+  padding:8px 14px; border-radius:9px; font-weight:600; font-size:13px;
+  display:inline-flex; align-items:center; gap:8px; transition:transform .12s, background .15s, box-shadow .15s;
+}
+.btn:hover{transform:translateY(-1px); background:var(--surface2)}
+.btn:disabled{opacity:.55; cursor:not-allowed; transform:none}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.primary:hover{box-shadow:0 4px 14px -4px color-mix(in srgb, var(--accent) 65%, transparent)}
+.btn.indigo{background:var(--indigo); border-color:var(--indigo); color:#fff}
+.btn.ghost-danger{color:var(--danger); border-color:color-mix(in srgb, var(--danger) 45%, var(--line2))}
+.btn.small{padding:5px 10px; font-size:12px}
+.btnrow{display:flex; gap:10px; flex-wrap:wrap; margin-top:14px}
+
+/* progress */
+#progress{display:none; margin-top:14px}
+#progress.active{display:block}
+.stagebar{height:5px; border-radius:99px; background:var(--surface2); overflow:hidden; position:relative}
+.stagebar::after{
+  content:""; position:absolute; inset:0; width:40%; border-radius:99px;
+  background:linear-gradient(90deg, var(--accent), var(--indigo));
+  animation:slide 1.15s ease-in-out infinite;
+}
+@keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(280%)}}
+#stageName{margin-top:8px; font-size:12.5px; color:var(--muted); font-family:'IBM Plex Mono',monospace}
+.errbox{
+  display:none; margin-top:12px; padding:10px 12px; border-radius:9px; font-size:12.5px;
+  background:var(--danger-soft); color:var(--danger); border:1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+.errbox.show{display:block}
+
+/* pipeline map (rail) */
+.pipemap{display:flex; flex-direction:column; gap:0}
+.pipestep{display:flex; gap:10px; align-items:flex-start; padding:5px 0; font-size:12.5px; color:var(--muted)}
+.pipestep .n{
+  font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--accent-ink);
+  background:var(--accent-soft); border-radius:6px; padding:1px 6px; margin-top:2px; flex:none;
+}
+
+/* ── results ────────────────────────────────────── */
+#empty{
+  padding:60px 30px; text-align:center; color:var(--muted);
+}
+#empty .bigpath{
+  font-family:'IBM Plex Mono',monospace; font-size:clamp(15px, 2.4vw, 22px); color:var(--ink);
+  display:flex; justify-content:center; gap:10px; flex-wrap:wrap; margin-bottom:18px;
+}
+#empty .bigpath .tok{background:var(--surface); border:1px solid var(--line2); border-radius:9px; padding:6px 12px; box-shadow:var(--shadow)}
+#empty .bigpath .a{color:var(--amber); align-self:center}
+#empty h2{font-size:20px; color:var(--ink); margin-bottom:8px}
+#empty p{max-width:520px; margin:0 auto}
+
+#results{display:none}
+#results.show{display:block}
+
+.tabs{display:flex; gap:4px; flex-wrap:wrap; padding:6px; background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); position:sticky; top:64px; z-index:50}
+.tab{
+  border:none; background:transparent; color:var(--muted); font-weight:600; font-size:13px;
+  padding:7px 13px; border-radius:8px; transition:background .15s, color .15s;
+}
+.tab:hover{color:var(--ink)}
+.tab.active{background:var(--accent-soft); color:var(--accent-ink)}
+.tab .count{
+  font-family:'IBM Plex Mono',monospace; font-size:10.5px; margin-left:6px;
+  background:var(--surface2); border-radius:6px; padding:1px 5px; color:var(--muted);
+}
+.tab.active .count{background:color-mix(in srgb, var(--accent) 22%, transparent)}
+.panel{display:none; margin-top:18px; animation:fadein .25s ease}
+.panel.active{display:block}
+@keyframes fadein{from{opacity:0; transform:translateY(4px)}to{opacity:1; transform:none}}
+
+/* stat cards */
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px}
+.stat{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; box-shadow:var(--shadow)}
+.stat .v{font-family:'Sora'; font-size:24px; font-weight:700; letter-spacing:-.02em}
+.stat .l{font-size:11.5px; color:var(--muted); font-weight:600; letter-spacing:.05em; text-transform:uppercase}
+.stat.teal .v{color:var(--accent)}
+.stat.indigo .v{color:var(--indigo)}
+.stat.amber .v{color:var(--amber)}
+
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+
+/* tables */
+.toolrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+.search{
+  flex:1; min-width:180px; border:1px solid var(--line2); background:var(--surface); color:var(--ink);
+  border-radius:9px; padding:7px 12px; font:13px 'Inter';
+}
+.search:focus{outline:none; border-color:var(--accent)}
+select.search{flex:none; width:auto}
+.tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow)}
+table{width:100%; border-collapse:collapse; font-size:13px}
+th{
+  text-align:left; font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted);
+  padding:10px 14px; border-bottom:1px solid var(--line); background:var(--surface2); position:sticky; top:0;
+}
+td{padding:9px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:color-mix(in srgb, var(--surface2) 55%, transparent)}
+.ent{font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:500}
+.typebadge{
+  display:inline-block; font-size:10px; font-weight:700; letter-spacing:.06em;
+  padding:2px 7px; border-radius:6px; margin-left:6px; vertical-align:middle;
+}
+.pathchip{
+  display:inline-flex; align-items:center; gap:5px; flex-wrap:wrap;
+  font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:500;
+  background:var(--accent-soft); color:var(--accent-ink);
+  border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius:7px; padding:3px 8px;
+}
+.pathchip .arr{color:var(--amber); font-weight:600}
+.relchip{
+  display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600;
+  background:var(--indigo-soft); color:var(--indigo); border-radius:7px; padding:3px 8px;
+  border:1px solid color-mix(in srgb, var(--indigo) 30%, transparent);
+}
+.relchip.similar{background:var(--surface2); color:var(--muted); border-style:dashed}
+.confbar{display:flex; align-items:center; gap:8px; min-width:110px}
+.confbar .track{flex:1; height:5px; border-radius:99px; background:var(--surface2); overflow:hidden}
+.confbar .fill{height:100%; border-radius:99px; background:linear-gradient(90deg, var(--amber), var(--accent))}
+.confbar .num{font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); width:38px; text-align:right}
+.srcpill{font-size:10px; font-weight:600; color:var(--muted); background:var(--surface2); border-radius:6px; padding:2px 7px; white-space:nowrap}
+details.evd{font-size:12px; color:var(--muted)}
+details.evd summary{cursor:pointer; color:var(--accent); font-weight:600; font-size:11.5px}
+.negflag{color:var(--danger); font-weight:700; font-size:10.5px}
+
+/* graph */
+.graphshell{position:relative; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden}
+#graphsvg{display:block; width:100%; height:640px; background-image:var(--dotgrid); background-size:22px 22px; cursor:grab}
+#graphsvg:active{cursor:grabbing}
+.graphctl{position:absolute; top:12px; left:12px; display:flex; flex-direction:column; gap:8px; z-index:5}
+.graphctl .panelbox{background:color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter:blur(6px); border:1px solid var(--line); border-radius:10px; padding:10px 12px; box-shadow:var(--shadow); font-size:12px}
+.legend{position:absolute; bottom:12px; left:12px; z-index:5; background:color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter:blur(6px); border:1px solid var(--line); border-radius:10px; padding:10px 12px; box-shadow:var(--shadow); font-size:11.5px; max-width:220px}
+.legend .li{display:flex; align-items:center; gap:7px; padding:1.5px 0}
+.legend .sw{width:11px; height:11px; border-radius:50%; flex:none}
+.gtooltip{
+  position:absolute; pointer-events:none; z-index:8; display:none; max-width:320px;
+  background:var(--ink); color:var(--bg); border-radius:9px; padding:8px 11px; font-size:12px; box-shadow:var(--shadow);
+}
+[data-theme="dark"] .gtooltip{background:#0B0F13; color:var(--ink); border:1px solid var(--line2)}
+.graphnode{cursor:pointer}
+.graphnode text{font-family:'IBM Plex Mono',monospace; font-size:11px; fill:var(--ink); pointer-events:none}
+.edgelabel{font-family:'IBM Plex Mono',monospace; font-size:9.5px; fill:var(--muted); pointer-events:none}
+input[type=range]{accent-color:var(--accent)}
+
+/* ontology tree */
+.ontree{font-family:'IBM Plex Mono',monospace; font-size:12.5px; line-height:2}
+.ontree .node{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.ontree .kids{margin-left:18px; padding-left:14px; border-left:1.5px dashed var(--line2)}
+.dr{font-size:10.5px; color:var(--muted)}
+.dr b{color:var(--amber); font-weight:600}
+
+/* active learning */
+.alcard{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px 18px; margin-bottom:12px; transition:opacity .3s, transform .3s}
+.alcard.done{opacity:0; transform:translateX(14px)}
+.alpair{display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:14px}
+.alctx{margin:8px 0 4px; font-size:12.5px; color:var(--muted)}
+.alctx .mono{color:var(--ink)}
+.albtns{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; align-items:center}
+.albtns input{border:1px solid var(--line2); background:var(--surface2); color:var(--ink); border-radius:8px; padding:6px 10px; font:12px 'IBM Plex Mono',monospace; width:180px}
+.alnote{font-size:12px; color:var(--muted); margin-top:6px}
+.flash{animation:flashbg 1.2s ease}
+@keyframes flashbg{0%{background:var(--accent-soft)}100%{background:transparent}}
+.toast{
+  position:fixed; bottom:22px; right:22px; z-index:100; background:var(--ink); color:var(--bg);
+  padding:10px 16px; border-radius:10px; font-size:13px; font-weight:600; box-shadow:var(--shadow);
+  opacity:0; transform:translateY(8px); transition:opacity .25s, transform .25s; pointer-events:none;
+}
+.toast.show{opacity:1; transform:none}
+
+/* eval + logs */
+.kv{display:grid; grid-template-columns:auto 1fr; gap:4px 18px; font-size:13px}
+.kv .k{color:var(--muted); font-weight:500}
+.kv .v{font-family:'IBM Plex Mono',monospace; font-size:12.5px}
+pre.logs{
+  background:var(--surface2); border:1px solid var(--line); border-radius:10px; padding:14px 16px;
+  font:12px/1.65 'IBM Plex Mono',monospace; overflow-x:auto; white-space:pre-wrap; max-height:520px; overflow-y:auto;
+}
+.subhead{display:flex; align-items:center; gap:10px; margin:22px 0 10px}
+.subhead h3{font-size:14px}
+.subhead .rule{flex:1; height:1px; background:var(--line)}
+footer{max-width:1440px; margin:0 auto; padding:0 24px 30px; color:var(--muted); font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hwrap">
+    <div class="brand">
+      <span class="brandmark">text <span class="arr">→</span> paths <span class="arr">→</span> ontology</span>
+      <div>
+        <h1>BOOFS Studio</h1>
+        <small>BOOTSTRAPPED ONTOLOGY &amp; OBJECT FRAME SEMANTICS</small>
+      </div>
+    </div>
+    <div class="hspacer"></div>
+    <span class="chip" id="backendChip"><span class="dot"></span><span id="backendChipText">checking backend…</span></span>
+    <span class="chip" id="modeChip" style="display:none"><span class="dot"></span><span id="modeChipText"></span></span>
+    <button class="iconbtn" id="themeBtn" title="Toggle dark / light mode" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ── left rail: input ── -->
+  <aside class="rail">
+    <div class="card">
+      <div class="cardhead"><span class="eyebrow">Input</span></div>
+      <div class="cardbody">
+        <textarea id="inputText" placeholder="Paste any English text — a biography, a news article, a research abstract. The relation inventory is induced from whatever you feed it; nothing is declared in advance." spellcheck="false"></textarea>
+        <div class="btnrow">
+          <button class="btn primary" id="runBtn">▶ Run pipeline</button>
+          <button class="btn" id="sampleBtn">Load default sample</button>
+        </div>
+        <div id="progress">
+          <div class="stagebar"></div>
+          <div id="stageName">starting…</div>
+        </div>
+        <div class="errbox" id="errBox"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><span class="eyebrow">Run options</span></div>
+      <div class="cardbody">
+        <div class="optrow">
+          <label>Coreference resolution
+            <span class="hint">Resolve pronouns before extraction (stage 0)</span></label>
+          <label class="switch"><input type="checkbox" id="optCoref" checked><span></span></label>
+        </div>
+        <div class="optrow">
+          <label>Persist corpus memory
+            <span class="hint">Grow the on-disk path statistics across runs</span></label>
+          <label class="switch"><input type="checkbox" id="optPersist"><span></span></label>
+        </div>
+        <div class="optrow">
+          <label>Coref before/after comparison
+            <span class="hint">Extra in-memory run without coref (slower)</span></label>
+          <label class="switch"><input type="checkbox" id="optCompare" checked><span></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><span class="eyebrow">Pipeline</span></div>
+      <div class="cardbody pipemap">
+        <div class="pipestep"><span class="n">0</span>Coreference resolution</div>
+        <div class="pipestep"><span class="n">1</span>Concept extraction (NER + noun chunks)</div>
+        <div class="pipestep"><span class="n">2</span>Candidate pairs (distant supervision)</div>
+        <div class="pipestep"><span class="n">3</span>OpenIE over dependency paths</div>
+        <div class="pipestep"><span class="n">4</span>DIRT relation induction + T-Box</div>
+        <div class="pipestep"><span class="n">5</span>Distributional clustering (SIMILAR_TO)</div>
+        <div class="pipestep"><span class="n">6</span>Active learning (seed + retrain)</div>
+        <div class="pipestep"><span class="n">7</span>Consolidation</div>
+        <div class="pipestep"><span class="n">8</span>KG embeddings (RotatE)</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── right: results ── -->
+  <main>
+    <div id="empty" class="card">
+      <div class="bigpath">
+        <span class="tok">take</span><span class="a">→</span><span class="tok">job</span><span class="a">→</span><span class="tok">with</span>
+      </div>
+      <h2>The path is the relation.</h2>
+      <p>Paste a document on the left and run the pipeline. BOOFS extracts dependency-path propositions,
+      clusters them into induced relation types, derives a taxonomy, and lets you refine it through active learning —
+      no relation schema is declared anywhere.</p>
+    </div>
+
+    <div id="results">
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="concepts">Concepts <span class="count" id="cntConcepts">0</span></button>
+        <button class="tab" data-tab="relations">Relations <span class="count" id="cntRelations">0</span></button>
+        <button class="tab" data-tab="graph">Knowledge graph</button>
+        <button class="tab" data-tab="ontology">Ontology <span class="count" id="cntSchema">0</span></button>
+        <button class="tab" data-tab="al">Active learning</button>
+        <button class="tab" data-tab="eval">Evaluation</button>
+        <button class="tab" data-tab="logs">Logs</button>
+      </nav>
+
+      <!-- OVERVIEW -->
+      <section class="panel active" id="panel-overview">
+        <div class="stats" id="statCards"></div>
+        <div class="grid2">
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Induced relation types</span></div>
+            <div class="cardbody" id="inducedTypes"></div>
+          </div>
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Distributional patterns (SIMILAR_TO clusters)</span></div>
+            <div class="cardbody" id="patternsBox"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Corpus memory</span></div>
+            <div class="cardbody"><div class="kv" id="corpusKv"></div></div>
+          </div>
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Coreference-resolved text</span></div>
+            <div class="cardbody">
+              <details class="evd"><summary>Show resolved text</summary>
+                <p class="mono" id="resolvedText" style="font-size:12px; margin-top:8px; white-space:pre-wrap"></p>
+              </details>
+            </div>
+          </div>
+        </div>
+        <div class="btnrow">
+          <button class="btn" id="exportJson">⬇ Export full results (JSON)</button>
+          <button class="btn" onclick="downloadCsv('relations')">⬇ Relations CSV</button>
+          <button class="btn" onclick="downloadCsv('concepts')">⬇ Concepts CSV</button>
+          <button class="btn" onclick="downloadCsv('propositions')">⬇ Propositions CSV</button>
+        </div>
+      </section>
+
+      <!-- CONCEPTS -->
+      <section class="panel" id="panel-concepts">
+        <div class="toolrow">
+          <input class="search" id="conceptSearch" placeholder="Search concepts…">
+          <select class="search" id="conceptFilter">
+            <option value="">All sources</option>
+            <option value="NER">Named entities (NER)</option>
+            <option value="NOUN_CHUNK">Noun-chunk concepts</option>
+          </select>
+        </div>
+        <div class="tablewrap"><table id="conceptTable">
+          <thead><tr><th>Concept</th><th>Type</th><th>Surface form</th><th>Confidence</th><th>Source</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </section>
+
+      <!-- RELATIONS -->
+      <section class="panel" id="panel-relations">
+        <div class="toolrow">
+          <input class="search" id="relSearch" placeholder="Search relations, entities…">
+          <select class="search" id="relFilter"><option value="">All sources</option></select>
+        </div>
+        <div class="tablewrap"><table id="relTable">
+          <thead><tr><th>Subject</th><th>Relation</th><th>Object</th><th>Confidence</th><th>Source</th><th>Evidence</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+
+        <div class="subhead"><h3>OpenIE propositions</h3><span class="rule"></span>
+          <span class="chip">dependency path = relation</span></div>
+        <div class="tablewrap"><table id="propTable">
+          <thead><tr><th>Arg 1</th><th>Dependency path</th><th>Induced label</th><th>Arg 2</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </section>
+
+      <!-- GRAPH -->
+      <section class="panel" id="panel-graph">
+        <div class="graphshell">
+          <div class="graphctl">
+            <div class="panelbox">
+              <div style="display:flex; gap:8px; margin-bottom:8px">
+                <button class="btn small" id="graphReset">Reset view</button>
+                <button class="btn small" id="graphSvgDl">⬇ SVG</button>
+              </div>
+              <label style="display:flex; align-items:center; gap:7px; padding:2px 0">
+                <input type="checkbox" id="graphSimilar" checked> Show SIMILAR_TO edges
+              </label>
+              <label style="display:block; padding-top:6px">Min confidence <span class="mono" id="confVal">0.00</span>
+                <input type="range" id="graphConf" min="0" max="1" step="0.05" value="0" style="width:100%">
+              </label>
+            </div>
+          </div>
+          <div class="legend" id="graphLegend"></div>
+          <svg id="graphsvg"></svg>
+          <div class="gtooltip" id="gtooltip"></div>
+        </div>
+        <p class="alnote" style="margin-top:10px">Drag nodes to pin them (double-click to release). Scroll to zoom, drag the canvas to pan.
+        The graph re-renders automatically when active learning changes the consolidated relations.</p>
+      </section>
+
+      <!-- ONTOLOGY -->
+      <section class="panel" id="panel-ontology">
+        <div class="grid2" style="margin-top:0">
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Subsumption hierarchy (induced T-Box)</span></div>
+            <div class="cardbody"><div class="ontree" id="ontologyTree"></div></div>
+          </div>
+          <div class="card">
+            <div class="cardhead"><span class="eyebrow">Relation schema</span></div>
+            <div class="cardbody" style="padding:0">
+              <div class="tablewrap" style="border:none; box-shadow:none"><table id="schemaTable">
+                <thead><tr><th>Relation</th><th>Domain → Range</th><th>Support</th><th>Parent</th><th>Containment</th><th>Depth</th></tr></thead>
+                <tbody></tbody>
+              </table></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ACTIVE LEARNING -->
+      <section class="panel" id="panel-al">
+        <div class="card" style="margin-bottom:16px">
+          <div class="cardbody" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap">
+            <div style="flex:1; min-width:240px">
+              <strong>Uncertainty-sampled queries.</strong>
+              <span style="color:var(--muted)"> The learner picks the candidate pairs it is least sure about.
+              Accepting confirms the induced relation; rejecting records <span class="mono">NO_RELATION</span>.
+              Each answer retrains the model, updates confidence calibration, and re-consolidates the relations
+              (once human labels exist, the classifier takes over — exactly as the backend defines).</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px">
+              <select class="search" id="alK">
+                <option value="4">4 queries</option>
+                <option value="6" selected>6 queries</option>
+                <option value="10">10 queries</option>
+              </select>
+              <button class="btn indigo" id="alFetch">Get suggestions</button>
+            </div>
+          </div>
+        </div>
+        <div class="kv" id="alStats" style="margin-bottom:14px"></div>
+        <div id="alList"><p style="color:var(--muted)">No suggestions requested yet.</p></div>
+      </section>
+
+      <!-- EVALUATION -->
+      <section class="panel" id="panel-eval">
+        <div class="grid2" style="margin-top:0" id="evalGrid"></div>
+        <div class="subhead"><h3>KG embedding neighbours</h3><span class="rule"></span></div>
+        <div class="tablewrap"><table id="kgSimTable">
+          <thead><tr><th>Entity</th><th>Nearest neighbours (cosine over RotatE embeddings)</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </section>
+
+      <!-- LOGS -->
+      <section class="panel" id="panel-logs">
+        <div class="subhead" style="margin-top:0"><h3>Pipeline stage output</h3><span class="rule"></span></div>
+        <pre class="logs" id="stdoutLog"></pre>
+        <div class="subhead"><h3>Log records</h3><span class="rule"></span></div>
+        <pre class="logs" id="recordLog"></pre>
+      </section>
+    </div>
+  </main>
+</div>
+
+<footer>BOOFS Studio wraps the pipeline as-is — extraction, induction, learning and evaluation all run in the unmodified backend.</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════ state ═══════════════════════════ */
+const S = { data:null, noRelToken:'NO_RELATION', graphPinned:new Set() };
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const TYPE_COLORS = {
+  PERSON:'#5566B8', ORG:'#2E7D74', GPE:'#C4862B', LOC:'#B0793B', DATE:'#7E8A97',
+  MONEY:'#4C8F5D', PRODUCT:'#9A5BA6', FAC:'#5E93B8', EVENT:'#B3564E', NORP:'#8C6FC4',
+  CONCEPT:'#93A2AF', TIME:'#7E8A97', CARDINAL:'#7E8A97', ORDINAL:'#7E8A97',
+  WORK_OF_ART:'#C06588', LAW:'#6B7F5A', LANGUAGE:'#5E93B8', PERCENT:'#4C8F5D', QUANTITY:'#4C8F5D'
+};
+const typeColor = t => TYPE_COLORS[t] || '#93A2AF';
+
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+/* ═══════════════════════════ theme ═══════════════════════════ */
+const themeBtn = $('#themeBtn');
+function setTheme(mode){
+  document.documentElement.dataset.theme = mode;
+  themeBtn.textContent = mode === 'dark' ? '☀️' : '🌙';
+  try{ localStorage.setItem('boofs-theme', mode); }catch(e){}
+  if (S.data) renderGraph();
+}
+let saved = null; try{ saved = localStorage.getItem('boofs-theme'); }catch(e){}
+setTheme(saved || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+themeBtn.onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+
+/* ═══════════════════════════ tabs ═══════════════════════════ */
+$('#tabs').addEventListener('click', e => {
+  const btn = e.target.closest('.tab'); if(!btn) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + btn.dataset.tab));
+  if (btn.dataset.tab === 'graph') renderGraph();
+});
+
+/* ═══════════════════════════ backend status ═══════════════════════════ */
+(async function(){
+  try{
+    const r = await fetch('/api/status'); const j = await r.json();
+    S.noRelToken = j.no_relation_token || 'NO_RELATION';
+    const chip = $('#backendChip');
+    if (j.spacy_model){ chip.classList.add('ok'); $('#backendChipText').textContent = `spaCy ${j.spacy_model} · coref: ${j.coref_backend}`; }
+    else $('#backendChipText').textContent = 'spaCy model missing';
+  }catch(e){ $('#backendChipText').textContent = 'backend offline'; }
+})();
+
+/* ═══════════════════════════ run pipeline ═══════════════════════════ */
+$('#sampleBtn').onclick = async () => {
+  const r = await fetch('/api/sample'); const j = await r.json();
+  $('#inputText').value = j.text.trim().split('\n').map(l => l.trim()).join('\n');
+  toast('Default sample loaded');
+};
+
+const STAGES = ['[0] resolving coreference…','[1] extracting concepts…','[2] generating candidate pairs…',
+  '[3] OpenIE proposition extraction…','[4] DIRT relation induction…','[5] distributional clustering…',
+  '[6] seeding the active learner…','[7] consolidating relations…','[8] training KG embeddings…','evaluating…'];
+
+$('#runBtn').onclick = async () => {
+  const text = $('#inputText').value;
+  const err = $('#errBox'); err.classList.remove('show');
+  if (!text.trim()){ err.textContent = 'The input is empty. Paste some text or load the default sample.'; err.classList.add('show'); return; }
+  const btn = $('#runBtn'); btn.disabled = true;
+  $('#progress').classList.add('active');
+  let i = 0; $('#stageName').textContent = STAGES[0];
+  const ticker = setInterval(()=>{ i = Math.min(i+1, STAGES.length-1); $('#stageName').textContent = STAGES[i]; }, 1400);
+  try{
+    const resp = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        text,
+        resolve_coreference: $('#optCoref').checked,
+        persist: $('#optPersist').checked,
+        compare_no_coref: $('#optCompare').checked,
+      })
+    });
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j.detail || 'Pipeline failed');
+    S.data = j;
+    renderAll();
+    toast(`Pipeline finished in ${j.elapsed_seconds}s`);
+  }catch(e){
+    err.textContent = e.message; err.classList.add('show');
+  }finally{
+    clearInterval(ticker);
+    $('#progress').classList.remove('active');
+    btn.disabled = false;
+  }
+};
+
+/* ═══════════════════════════ render: everything ═══════════════════════════ */
+function renderAll(){
+  const d = S.data;
+  $('#empty').style.display = 'none';
+  $('#results').classList.add('show');
+  const mc = $('#modeChip'); mc.style.display = '';
+  mc.classList.toggle('ok', d.mode === 'persistent');
+  $('#modeChipText').textContent = d.mode === 'persistent' ? 'persistent corpus memory' : 'ephemeral session';
+
+  renderOverview(); renderConcepts(); renderRelations(); renderOntology();
+  renderEval(); renderLogs(); renderALStats();
+  $('#alList').innerHTML = '<p style="color:var(--muted)">No suggestions requested yet.</p>';
+  if ($('#panel-graph').classList.contains('active')) renderGraph(); else S._graphStale = true;
+}
+
+function pathChip(pathKey){
+  const toks = String(pathKey || '').split('→');
+  return `<span class="pathchip">${toks.map(esc).join('<span class="arr">→</span>')}</span>`;
+}
+function relChip(rel){
+  const cls = rel === 'SIMILAR_TO' ? 'relchip similar' : 'relchip';
+  return `<span class="${cls}">${esc(rel)}</span>`;
+}
+function confBar(c){
+  const pct = Math.max(0, Math.min(1, +c || 0)) * 100;
+  return `<div class="confbar"><div class="track"><div class="fill" style="width:${pct}%"></div></div><span class="num">${(+c).toFixed(2)}</span></div>`;
+}
+function typeBadge(t){
+  if (!t) return '';
+  const col = typeColor(t);
+  return `<span class="typebadge" style="background:color-mix(in srgb, ${col} 16%, transparent); color:${col}">${esc(t)}</span>`;
+}
+
+/* ── overview ── */
+function renderOverview(){
+  const d = S.data;
+  const stats = [
+    ['teal', d.concepts.length, 'concepts'],
+    ['indigo', d.relations.length, 'relations'],
+    ['', d.propositions.length, 'propositions'],
+    ['teal', d.induced_relation_types.length, 'induced types'],
+    ['amber', d.elapsed_seconds + 's', 'run time'],
+    ['', d.candidate_pairs.length, 'candidate pairs'],
+  ];
+  $('#statCards').innerHTML = stats.map(([cls,v,l]) =>
+    `<div class="stat ${cls}"><div class="v">${esc(v)}</div><div class="l">${l}</div></div>`).join('');
+
+  $('#inducedTypes').innerHTML = d.induced_relation_types.length
+    ? d.induced_relation_types.map(t => relChip(t)).join(' ')
+    : '<span style="color:var(--muted)">None induced on this run.</span>';
+
+  $('#patternsBox').innerHTML = d.patterns.length ? d.patterns.map(p =>
+      `<div style="margin-bottom:8px"><span class="srcpill">cluster ${p.cluster_id}</span>
+       <span class="mono" style="font-size:12px"> ${p.entities.map(esc).join(', ')}</span>
+       <div class="dr">signature: <b>${p.signature.map(esc).join(' · ') || '—'}</b></div></div>`).join('')
+    : '<span style="color:var(--muted)">No distributional clusters found (small text).</span>';
+
+  const ps = d.path_stats, ls = d.label_store, m = d.model;
+  $('#corpusKv').innerHTML = [
+    ['Unique dependency paths', ps.paths],
+    ['Total path support', ps.total_support],
+    ['Documents ingested', ps.documents],
+    ['Coreference backend', d.coref_backend],
+    ['Label store', Object.entries(ls).map(([k,v])=>`${k}: ${v}`).join(' · ') || 'empty'],
+    ['Relation model', m.fitted ? `fitted (${m.n_train} examples, ${m.classes.length} classes)` : 'not fitted'],
+  ].map(([k,v]) => `<span class="k">${k}</span><span class="v">${esc(v)}</span>`).join('');
+
+  $('#resolvedText').textContent = d.resolved_text || '';
+}
+
+/* ── concepts ── */
+function renderConcepts(){
+  const d = S.data;
+  const q = $('#conceptSearch').value.toLowerCase();
+  const f = $('#conceptFilter').value;
+  const rows = d.concepts.filter(c =>
+    (!q || c.concept.includes(q) || (c.surface||'').toLowerCase().includes(q) || (c.type||'').toLowerCase().includes(q)) &&
+    (!f || (c.sources||'').includes(f)));
+  $('#conceptTable tbody').innerHTML = rows.map(c => `
+    <tr><td class="ent">${esc(c.concept)}</td><td>${typeBadge(c.type)}</td>
+    <td style="color:var(--muted)">${esc(c.surface)}</td><td>${confBar(c.confidence)}</td>
+    <td><span class="srcpill">${esc(c.sources)}</span></td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--muted)">No matching concepts.</td></tr>';
+  $('#cntConcepts').textContent = d.concepts.length;
+}
+$('#conceptSearch').oninput = renderConcepts;
+$('#conceptFilter').onchange = renderConcepts;
+
+/* ── relations + propositions ── */
+function renderRelations(){
+  const d = S.data;
+  const q = $('#relSearch').value.toLowerCase();
+  const f = $('#relFilter').value;
+  const sources = [...new Set(d.relations.map(r => r.source).filter(Boolean))];
+  const sel = $('#relFilter');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All sources</option>' + sources.map(s => `<option ${s===cur?'selected':''}>${esc(s)}</option>`).join('');
+
+  const rows = d.relations.filter(r =>
+    (!q || r.subject.includes(q) || r.object.includes(q) || r.relation.toLowerCase().includes(q)) &&
+    (!f || r.source === f));
+  $('#relTable tbody').innerHTML = rows.map(r => `
+    <tr><td class="ent">${esc(r.subject)}</td><td>${relChip(r.relation)}</td>
+    <td class="ent">${esc(r.object)}</td><td>${confBar(r.confidence)}</td>
+    <td><span class="srcpill">${esc(r.source||'')}</span></td>
+    <td>${r.evidence ? `<details class="evd"><summary>evidence</summary>${esc(r.evidence)}</details>` : ''}</td></tr>`).join('')
+    || '<tr><td colspan="6" style="color:var(--muted)">No matching relations.</td></tr>';
+  $('#cntRelations').textContent = d.relations.length;
+
+  $('#propTable tbody').innerHTML = d.propositions.map(p => `
+    <tr><td class="ent">${esc(p.arg1)}${typeBadge(p.type1)}</td>
+    <td>${pathChip(p.path_key)}</td><td>${relChip(p.relation)}</td>
+    <td class="ent">${esc(p.arg2)}${typeBadge(p.type2)}</td>
+    <td>${p.negated ? '<span class="negflag">NEGATED</span>' : ''}
+        <details class="evd"><summary>sentence</summary>${esc(p.sentence)}</details></td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--muted)">No propositions extracted.</td></tr>';
+}
+$('#relSearch').oninput = renderRelations;
+$('#relFilter').onchange = renderRelations;
+
+/* ── ontology ── */
+function renderOntology(){
+  const d = S.data, schema = d.relation_schema || {};
+  const labels = Object.keys(schema).sort();
+  $('#cntSchema').textContent = labels.length;
+  $('#schemaTable tbody').innerHTML = labels.map(L => {
+    const s = schema[L];
+    return `<tr><td>${relChip(L)}</td>
+      <td class="dr"><b>${esc(s.domain)}</b> → <b>${esc(s.range)}</b></td>
+      <td class="mono" style="font-size:12px">${s.support}</td>
+      <td>${s.parent ? relChip(s.parent) : '<span style="color:var(--muted)">root</span>'}</td>
+      <td class="mono" style="font-size:12px">${s.parent ? s.containment : '—'}</td>
+      <td class="mono" style="font-size:12px">${s.depth}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" style="color:var(--muted)">No schema induced.</td></tr>';
+
+  // tree
+  const kids = {}; const roots = [];
+  labels.forEach(L => {
+    const p = schema[L].parent;
+    if (p && schema[p]) (kids[p] = kids[p] || []).push(L); else roots.push(L);
+  });
+  const node = L => {
+    const s = schema[L];
+    let html = `<div class="node">${relChip(L)}<span class="dr"><b>${esc(s.domain)}</b>→<b>${esc(s.range)}</b> · support ${s.support}</span></div>`;
+    if (kids[L] && kids[L].length) html += `<div class="kids">${kids[L].map(node).join('')}</div>`;
+    return html;
+  };
+  $('#ontologyTree').innerHTML = roots.length ? roots.map(node).join('') : '<span style="color:var(--muted)">No relations yet.</span>';
+}
+
+/* ── evaluation ── */
+function kvBlock(title, obj){
+  if (obj == null) return '';
+  const entries = typeof obj === 'object' && !Array.isArray(obj) ? Object.entries(obj) : [['value', obj]];
+  return `<div class="card"><div class="cardhead"><span class="eyebrow">${esc(title)}</span></div>
+    <div class="cardbody"><div class="kv">${entries.map(([k,v]) =>
+      `<span class="k">${esc(k)}</span><span class="v">${esc(typeof v === 'object' ? JSON.stringify(v) : (v ?? '—'))}</span>`).join('')}
+    </div></div></div>`;
+}
+function renderEval(){
+  const d = S.data, ev = d.evaluation || {};
+  let html = '';
+  if (ev.coreference) html += kvBlock('Coreference improvement', ev.coreference);
+  if (ev.coref_off_vs_on) html += kvBlock('Coref off vs on (pronoun-free proxy precision)', ev.coref_off_vs_on);
+  html += kvBlock('KG embeddings · Hits@10', {hits_at_10: ev.hits_at_10 ?? 'n/a (graph too small for held-out eval)'});
+  if (ev.entity_similarity_quality) html += kvBlock('Entity-similarity quality', ev.entity_similarity_quality);
+  if (ev.incremental_drift) html += kvBlock('Incremental vs full induction (approx. error)', ev.incremental_drift);
+  if (ev.baseline_cooccurrence_pairs != null) html += kvBlock('Co-occurrence baseline', {candidate_pair_edges: ev.baseline_cooccurrence_pairs, note:'every nearby pair linked — the floor the induction layer improves on'});
+  Object.keys(ev).filter(k => k.endsWith('_error')).forEach(k => { html += kvBlock(k.replace(/_/g,' '), {error: ev[k]}); });
+  $('#evalGrid').innerHTML = html || '<p style="color:var(--muted)">No evaluation metrics available.</p>';
+
+  const kg = d.kg || {};
+  $('#kgSimTable tbody').innerHTML = (kg.entity_similarity || []).map(row => `
+    <tr><td class="ent">${esc(row.entity)}</td>
+    <td>${row.similar.map(s => `<span class="pathchip" style="margin:2px">${esc(s.entity)} <span class="arr">·</span> ${s.score}</span>`).join(' ')}</td></tr>`).join('')
+    || `<tr><td colspan="2" style="color:var(--muted)">${kg.trained ? 'No similarity rows.' : 'KG embeddings not trained on this run (PyKEEN missing or too few triples) — the rest of the pipeline is unaffected.'}</td></tr>`;
+}
+
+/* ── logs ── */
+function renderLogs(){
+  $('#stdoutLog').textContent = S.data.logs.stdout || '(no stage output)';
+  $('#recordLog').textContent = (S.data.logs.records || []).join('\n') || '(no log records)';
+}
+
+/* ═══════════════════════════ knowledge graph ═══════════════════════════ */
+let sim = null;
+$('#graphConf').oninput = e => { $('#confVal').textContent = (+e.target.value).toFixed(2); renderGraph(); };
+$('#graphSimilar').onchange = renderGraph;
+$('#graphReset').onclick = () => { S.graphPinned.clear(); renderGraph(true); };
+$('#graphSvgDl').onclick = () => {
+  const svg = $('#graphsvg').cloneNode(true);
+  svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
+  const css = getComputedStyle(document.documentElement);
+  const ink = css.getPropertyValue('--ink').trim(), muted = css.getPropertyValue('--muted').trim();
+  svg.style.background = css.getPropertyValue('--surface').trim();
+  const style = document.createElementNS('http://www.w3.org/2000/svg','style');
+  style.textContent = `.graphnode text{font-family:monospace;font-size:11px;fill:${ink}}
+.edgelabel{font-family:monospace;font-size:9.5px;fill:${muted}}`;
+  svg.prepend(style);
+  const blob = new Blob([svg.outerHTML], {type:'image/svg+xml'});
+  triggerDownload(blob, 'boofs_knowledge_graph.svg');
+};
+
+function renderGraph(reset){
+  if (!S.data) return;
+  S._graphStale = false;
+  const showSim = $('#graphSimilar').checked;
+  const minConf = +$('#graphConf').value;
+  const typeOf = {}; S.data.concepts.forEach(c => { typeOf[c.concept] = c.type; });
+
+  const rels = S.data.relations.filter(r =>
+    (+r.confidence >= minConf) && (showSim || r.relation !== 'SIMILAR_TO'));
+
+  const nodeSet = new Map();
+  rels.forEach(r => { [r.subject, r.object].forEach(n => {
+    if (!nodeSet.has(n)) nodeSet.set(n, {id:n, type:typeOf[n] || 'CONCEPT', degree:0});
+  }); nodeSet.get(r.subject).degree++; nodeSet.get(r.object).degree++; });
+
+  const nodes = [...nodeSet.values()];
+  // group parallel edges for arc offsets
+  const pairCount = {};
+  const links = rels.map(r => {
+    const k = [r.subject, r.object].sort().join('|');
+    pairCount[k] = (pairCount[k] || 0) + 1;
+    return {source:r.subject, target:r.object, rel:r.relation, conf:+r.confidence,
+            src:r.source, evidence:r.evidence, lane:pairCount[k]-1, similar:r.relation==='SIMILAR_TO'};
+  });
+
+  const svgEl = $('#graphsvg');
+  const W = svgEl.clientWidth || 900, H = svgEl.clientHeight || 640;
+  const svg = d3.select(svgEl); svg.selectAll('*').remove();
+  const css = getComputedStyle(document.documentElement);
+  const lineCol = css.getPropertyValue('--line2').trim();
+  const mutedCol = css.getPropertyValue('--muted').trim();
+
+  const defs = svg.append('defs');
+  defs.append('marker').attr('id','arrow').attr('viewBox','0 -4 8 8').attr('refX',7).attr('markerWidth',7).attr('markerHeight',7).attr('orient','auto')
+    .append('path').attr('d','M0,-3.5L8,0L0,3.5').attr('fill', mutedCol);
+
+  const g = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.25, 4]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom);
+  if (reset) svg.call(zoom.transform, d3.zoomIdentity);
+
+  if (sim) sim.stop();
+  sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(l => l.similar ? 170 : 120).strength(l => l.similar ? .25 : .6))
+    .force('charge', d3.forceManyBody().strength(-320))
+    .force('center', d3.forceCenter(W/2, H/2))
+    .force('collide', d3.forceCollide().radius(d => 16 + d.degree * 1.5));
+
+  const link = g.append('g').selectAll('path').data(links).join('path')
+    .attr('fill','none')
+    .attr('stroke', d => d.similar ? lineCol : mutedCol)
+    .attr('stroke-width', d => d.similar ? 1.2 : 1 + d.conf * 1.6)
+    .attr('stroke-dasharray', d => d.similar ? '4 4' : null)
+    .attr('opacity', d => d.similar ? .65 : .35 + d.conf * .55)
+    .attr('marker-end', d => d.similar ? null : 'url(#arrow)');
+
+  const elab = g.append('g').selectAll('text').data(links.filter(l => !l.similar)).join('text')
+    .attr('class','edgelabel').attr('text-anchor','middle').text(d => d.rel.length > 22 ? d.rel.slice(0,20)+'…' : d.rel);
+
+  const node = g.append('g').selectAll('g').data(nodes).join('g').attr('class','graphnode')
+    .call(d3.drag()
+      .on('start', (e,d) => { if(!e.active) sim.alphaTarget(.25).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })
+      .on('end', (e,d) => { if(!e.active) sim.alphaTarget(0); S.graphPinned.add(d.id); }))
+    .on('dblclick', (e,d) => { d.fx=d.fy=null; S.graphPinned.delete(d.id); sim.alpha(.3).restart(); e.stopPropagation(); });
+
+  node.append('circle')
+    .attr('r', d => 8 + Math.min(10, d.degree * 1.6))
+    .attr('fill', d => typeColor(d.type))
+    .attr('fill-opacity', .88)
+    .attr('stroke', css.getPropertyValue('--surface').trim())
+    .attr('stroke-width', 2);
+  node.append('text').attr('dy', d => -(13 + Math.min(10, d.degree*1.6))).attr('text-anchor','middle').text(d => d.id);
+
+  const tip = $('#gtooltip');
+  node.on('mousemove', (e,d) => {
+    tip.style.display='block';
+    tip.innerHTML = `<b class="mono">${esc(d.id)}</b><br>type: ${esc(d.type)} · degree: ${d.degree}`;
+    positionTip(e);
+  }).on('mouseleave', () => tip.style.display='none');
+  link.on('mousemove', (e,d) => {
+    tip.style.display='block';
+    tip.innerHTML = `<span class="mono">${esc(d.source.id||d.source)} → ${esc(d.rel)} → ${esc(d.target.id||d.target)}</span>
+      <br>confidence ${d.conf.toFixed(2)} · ${esc(d.src||'')}${d.evidence?`<br><i>${esc(String(d.evidence).slice(0,140))}</i>`:''}`;
+    positionTip(e);
+  }).on('mouseleave', () => tip.style.display='none');
+  function positionTip(e){
+    const r = $('#graphsvg').getBoundingClientRect();
+    tip.style.left = (e.clientX - r.left + 14) + 'px';
+    tip.style.top = (e.clientY - r.top + 10) + 'px';
+  }
+
+  sim.on('tick', () => {
+    link.attr('d', d => {
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const dr = Math.sqrt(dx*dx + dy*dy) || 1;
+      if (d.lane === 0) return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
+      const off = (d.lane % 2 ? 1 : -1) * Math.ceil(d.lane/2) * 22;
+      const mx = (d.source.x + d.target.x)/2 - dy/dr * off;
+      const my = (d.source.y + d.target.y)/2 + dx/dr * off;
+      return `M${d.source.x},${d.source.y}Q${mx},${my} ${d.target.x},${d.target.y}`;
+    });
+    elab.attr('x', d => (d.source.x + d.target.x)/2).attr('y', d => (d.source.y + d.target.y)/2 - 5);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  // legend
+  const types = [...new Set(nodes.map(n => n.type))].sort();
+  $('#graphLegend').innerHTML = `<div class="eyebrow" style="margin-bottom:5px">Entity types</div>` +
+    types.map(t => `<div class="li"><span class="sw" style="background:${typeColor(t)}"></span>${esc(t)}</div>`).join('') +
+    `<div class="li" style="margin-top:5px; color:var(--muted)"><span style="border-top:2px dashed ${lineCol}; width:14px"></span> SIMILAR_TO</div>`;
+}
+
+/* ═══════════════════════════ active learning ═══════════════════════════ */
+function renderALStats(extra){
+  const d = S.data;
+  const ls = extra?.label_store || d.label_store;
+  const m = extra?.model || d.model;
+  $('#alStats').innerHTML = [
+    ['Label store', Object.entries(ls).map(([k,v])=>`${k}: ${v}`).join(' · ') || 'empty'],
+    ['Model', m.fitted ? `fitted · ${m.classes.length} classes` : 'not fitted'],
+    ['Human labels drive consolidation', (m.has_human_labels ?? d.model.has_human_labels) ? 'yes — classifier active' : 'not yet — showing induced OpenIE edges'],
+  ].map(([k,v]) => `<span class="k">${k}</span><span class="v">${esc(v)}</span>`).join('');
+}
+
+$('#alFetch').onclick = async () => {
+  const btn = $('#alFetch'); btn.disabled = true;
+  try{
+    const r = await fetch(`/api/al/queries?k=${$('#alK').value}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || 'Could not fetch suggestions');
+    renderALStats(j);
+    const list = $('#alList');
+    if (!j.queries.length){ list.innerHTML = '<p style="color:var(--muted)">No unlabeled candidates remain — every pair has a human label.</p>'; return; }
+    list.innerHTML = j.queries.map(q => `
+      <div class="alcard" data-key="${esc(q.key)}">
+        <div class="alpair">
+          <span class="ent">${esc(q.entity1)}</span>${typeBadge(q.type1)}
+          <span style="color:var(--amber); font-family:'IBM Plex Mono'">↔</span>
+          <span class="ent">${esc(q.entity2)}</span>${typeBadge(q.type2)}
+          ${q.suggested ? `<span style="color:var(--muted); font-size:12px">induced:</span> ${relChip(q.suggested)}` : '<span class="srcpill">no induced relation for this pair</span>'}
+        </div>
+        <div class="alctx">
+          ${q.context ? `context: <span class="mono">${esc(q.context)}</span> · ` : ''}
+          ${q.sentence ? `<details class="evd" style="display:inline"><summary>sentence</summary>${esc(q.sentence)}</details>` : ''}
+          ${q.model_prediction ? ` · model says <span class="mono">${esc(q.model_prediction)}</span> (p=${q.model_probability})` : ''}
+        </div>
+        <div class="albtns">
+          ${q.suggested ? `<button class="btn primary small" data-act="accept">✓ Accept ${esc(q.suggested)}</button>` : ''}
+          <button class="btn ghost-danger small" data-act="reject">✕ Reject (no relation)</button>
+          <input class="al-custom" placeholder="custom label e.g. WORKS_FOR">
+          <button class="btn small" data-act="custom">Apply</button>
+        </div>
+      </div>`).join('');
+    // stash suggested labels safely (keys/labels may contain any characters)
+    list.querySelectorAll('.alcard').forEach((card, idx) => { card._q = j.queries[idx]; });
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; }
+};
+
+$('#alList').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-act]'); if (!btn) return;
+  const card = btn.closest('.alcard'); const q = card._q; if (!q) return;
+  if (btn.dataset.act === 'accept') alLabel(q.key, q.suggested, btn);
+  else if (btn.dataset.act === 'reject') alLabel(q.key, S.noRelToken, btn);
+  else { const v = card.querySelector('.al-custom').value.trim(); if (v) alLabel(q.key, v, btn); }
+});
+$('#alList').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target.classList.contains('al-custom')) return;
+  const card = e.target.closest('.alcard'); const v = e.target.value.trim();
+  if (card?._q && v) alLabel(card._q.key, v, e.target);
+});
+
+async function alLabel(key, label, el){
+  const card = el.closest('.alcard');
+  card.querySelectorAll('button,input').forEach(b => b.disabled = true);
+  try{
+    const r = await fetch('/api/al/label', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key, label})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || 'Labeling failed');
+    // backend re-consolidated: adopt its relations & refresh views
+    S.data.relations = j.relations;
+    S.data.label_store = j.label_store;
+    S.data.model = j.model;
+    renderALStats(j);
+    renderRelations();
+    renderOverview();
+    renderGraph();
+    card.classList.add('done');
+    setTimeout(() => card.remove(), 320);
+    toast(label === S.noRelToken
+      ? `Rejected ${j.labeled.entity1} ↔ ${j.labeled.entity2}`
+      : `Labeled ${j.labeled.entity1} → ${label} → ${j.labeled.entity2}`);
+  }catch(e){
+    toast(e.message);
+    card.querySelectorAll('button,input').forEach(b => b.disabled = false);
+  }
+}
+
+/* ═══════════════════════════ exports ═══════════════════════════ */
+function triggerDownload(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+$('#exportJson').onclick = () => {
+  triggerDownload(new Blob([JSON.stringify(S.data, null, 2)], {type:'application/json'}), 'boofs_results.json');
+};
+function downloadCsv(kind){
+  const d = S.data; let rows, headers;
+  if (kind === 'relations'){ headers = ['subject','relation','object','confidence','source','evidence']; rows = d.relations; }
+  else if (kind === 'concepts'){ headers = ['concept','type','surface','confidence','sources']; rows = d.concepts; }
+  else { headers = ['arg1','type1','relation','path_key','arg2','type2','negated','sentence']; rows = d.propositions; }
+  const q = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
+  const csv = [headers.join(','), ...rows.map(r => headers.map(h => q(r[h])).join(','))].join('\n');
+  triggerDownload(new Blob([csv], {type:'text/csv'}), `boofs_${kind}.csv`);
+}
+</script>
+</body>
+</html>
