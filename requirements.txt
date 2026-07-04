@@ -1,0 +1,13 @@
+# BOOFS backend dependencies
+numpy
+spacy>=3.5
+scikit-learn
+
+# BOOFS Studio (UI wrapper)
+fastapi
+uvicorn
+pydantic
+
+# Optional — the backend degrades gracefully without these:
+# pykeen          # KG embeddings (stage 8); pipeline continues if missing
+# fastcoref       # best coreference backend; rule-based fallback otherwise
