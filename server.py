@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# ── the user's backend, imported as-is ──────────────────────────────────────
+
 import boofs
 from boofs import (
     BOOFSOntologyLearner, LabelStore, PathStatsStore, Oracle,
@@ -86,13 +86,13 @@ def _clean(o):
         return {str(k): _clean(v) for k, v in o.items()}
     if isinstance(o, (list, tuple, set)):
         return [_clean(x) for x in o]
-    item = getattr(o, "item", None)          # numpy scalar → python scalar
+    item = getattr(o, "item", None)          
     if callable(item):
         try:
             return _clean(item())
         except Exception:
             pass
-    tolist = getattr(o, "tolist", None)      # numpy array → list
+    tolist = getattr(o, "tolist", None)      
     if callable(tolist):
         try:
             return _clean(tolist())
@@ -103,13 +103,13 @@ def _clean(o):
 # ── single-session state (local research tool) ──────────────────────────────
 _lock = threading.Lock()
 SESSION: Dict[str, Any] = {
-    "learner": None,        # the live BOOFSOntologyLearner
-    "pairs": None,          # candidate pairs from the last run
-    "patterns": None,       # distributional patterns from the last run
-    "results": None,        # raw results dict returned by process()
-    "query_cache": {},      # LabelStore.key -> example dict (for AL labeling)
-    "last_run": None,       # serialized payload of the last run
-    "mode": None,           # "persistent" | "ephemeral"
+    "learner": None,        
+    "pairs": None,          
+    "patterns": None,       
+    "results": None,        
+    "query_cache": {},     
+    "last_run": None,       
+    "mode": None,           
 }
 
 
@@ -239,8 +239,7 @@ def _run_evaluation(learner: BOOFSOntologyLearner, compare_no_coref: bool,
         except Exception as e:
             ev["baseline_error"] = str(e)
     if compare_no_coref:
-        # Same before/after comparison the backend's __main__ performs:
-        # a throwaway in-memory learner run WITHOUT coreference.
+        
         try:
             _no_coref = BOOFSOntologyLearner.for_evaluation()
             _no_coref.process(learner.raw_text, use_active_learning=False,
@@ -257,13 +256,13 @@ def _run_evaluation(learner: BOOFSOntologyLearner, compare_no_coref: bool,
 class RunRequest(BaseModel):
     text: str
     resolve_coreference: bool = True
-    persist: bool = False          # False = in-memory session (for_evaluation)
-    compare_no_coref: bool = True  # run the no-coref comparison from __main__
+    persist: bool = False          
+    compare_no_coref: bool = True  
 
 
 class LabelRequest(BaseModel):
     key: str
-    label: str                     # relation label, or "NO_RELATION" to reject
+    label: str                     
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -305,7 +304,7 @@ def run_pipeline(req: RunRequest):
             try:
                 results = learner.process(
                     req.text,
-                    use_active_learning=False,   # AL is driven interactively via the panel
+                    use_active_learning=False,   
                     verbose=True,
                     resolve_coreference=req.resolve_coreference,
                     enable_relation_model=True,
@@ -393,8 +392,7 @@ def al_label(req: LabelRequest):
         learner.label_store.add(ex, label, source="oracle")     # backend method
         learner.active_learner.retrain()                        # backend method
         learner._update_calibration()                           # backend method
-        # Re-consolidate through the backend's own consolidation path, which
-        # switches to the classifier once human labels exist (its designed rule).
+        
         learner.relations = learner._consolidate_relations(
             learner.propositions, SESSION["patterns"] or [], pairs=SESSION["pairs"])
 

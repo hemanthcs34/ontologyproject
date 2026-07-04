@@ -73,110 +73,71 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BOOFSConfig:
-    # --- spaCy model selection ---
+    
     spacy_model_preferred: str = "en_core_web_lg"
     spacy_model_fallback: str = "en_core_web_sm"
 
-    # --- entity pairing (candidate generation) ---
+    
     max_entity_token_distance: int = 10
 
-    # --- OpenIE proposition extraction ---
-    # Maximum number of tokens on a dependency path (excluding the two argument
-    # tokens). Longer paths are almost always spurious multi-clause artifacts.
+    
     max_path_len: int = 5
-    # Content POS tags that may appear on a relation path. This is a *linguistic*
-    # (language-level) filter, not a domain one: it keeps predicative material
-    # (verbs, relational nouns, adpositions, particles, auxiliaries) and drops
-    # determiners/pronouns/etc. It contains no lexical items.
+    
     path_content_pos: Tuple[str, ...] = ('VERB', 'NOUN', 'PROPN', 'ADP', 'PART', 'AUX')
 
-    # --- DIRT relation induction ---
-    # A path must occur at least this many times (across the accumulated corpus)
-    # to participate in clustering; rarer paths become their own singleton
-    # relation labeled by their surface form.
+    
     min_path_support: int = 1
-    # --- induction quality / stability (all corpus-derived, no relation schema) ---
-    # Cluster only within blocks that share a dominant argument NER-type signature
-    # (prevents nonsensical cross-type merges and bounds the O(P^2) cost to per
-    # block). The signatures come from the parser, not a hand-written table.
+    
     type_signature_blocking: bool = True
-    # The per-block merge threshold is derived from that block's own distance
-    # distribution (cut at the widest natural gap between "same" and "different"
-    # pairs), clamped to these bounds so a block can neither merge everything nor
-    # nothing. Bounds only — the cut point itself comes from the data.
+   
     adaptive_threshold_min: float = 0.30
     adaptive_threshold_max: float = 0.75
-    # Full re-clustering is expensive (O(P^2) per block). Between full passes, new
-    # or changed paths are assigned incrementally to the nearest cluster medoid;
-    # a full pass runs at least every this many fits to reconsolidate. This is a
-    # runtime optimization only — a full pass reproduces the exact same result.
+    
     recluster_every: int = 25
-    # PMI cold-start smoothing (OPT-IN): rare (hapax) fillers back off to their
-    # argument NER type, giving same-typed rare paths a non-zero similarity signal
-    # instead of zero. Off by default (0.0) because on a single example it cannot
-    # distinguish synonyms from non-synonyms without risking over-merge; the robust
-    # cold-start mechanism is cross-run accumulation + drift reconsolidation below.
-    # Set >0 to trade precision for recall on sparse corpora. Corpus-derived.
+   
     type_smoothing_max_alpha: float = 0.0
-    # Per-block clustering cap (bounds the O(block^2) matrix for a pathologically
-    # large type block); paths beyond the cap in a block are still assigned to that
-    # block's clusters incrementally, so NO path is exiled to a forced singleton.
+    
     max_block_size: int = 800
-    # Adaptive per-block thresholds are smoothed across full passes with this EMA
-    # weight on the previous value, so cluster boundaries don't jitter as the
-    # corpus grows. Both the old and new values are corpus-derived.
+    
     threshold_ema_beta: float = 0.5
-    # In a sparse block (too few paths for a meaningful within-block gap, e.g. two
-    # paths), the gap threshold is self-referential and merges nothing. Instead we
-    # fall back to a corpus-wide reference distance learned from POPULATED blocks
-    # that actually merged (the typical "same-relation" distance). A pair in a
-    # sparse block merges if its distance is below that learned level. This bound
-    # is the minimum block size for which the within-block gap is trusted.
+    
     min_block_for_gap: int = 3
-    # A new cluster inherits a previous run's label when their path-sets overlap
-    # by at least this Jaccard ratio -> labels stay stable as the corpus grows.
+   
     label_carryover_jaccard: float = 0.5
-    # Confidence = mean(cluster cohesion, support/median_support); this is the
-    # relative weight of cohesion (the rest goes to support). Corpus-derived.
+    
     conf_cohesion_weight: float = 0.5
-    # Empirical confidence calibration: once at least this many human-labelled
-    # induced edges exist in a confidence bucket, the raw score is mapped to the
-    # bucket's observed reliability (how often that confidence was actually
-    # correct). Calibration is corpus/label-driven and sharpens as labels grow.
+    
     calib_bins_count: int = 10
     calib_min_evidence: int = 20
-    # Relation A is subsumed by a more general B when A's argument fillers are
-    # (on both slots) contained in B's by at least this ratio. Strength cutoff
-    # only; the containment values themselves are corpus-derived.
+    
     subsumption_min_containment: float = 0.6
-    # Optional sidecar for cross-run label/cluster state (set by the learner).
+    
     induction_state_path: Optional[str] = None
-    # Persistent path-statistics store (the self-growing corpus memory).
+    
     path_stats_path: str = "boofs_path_stats.jsonl"
-    # Per-document persistence appends only that document's deltas; a full
-    # (atomic) compaction runs once every this many appends to bound file growth.
+    
     path_stats_compact_every: int = 200
 
-    # --- clustering (legacy distributional discovery) ---
+    
     dbscan_eps_unsup: float = 0.4
 
-    # --- negation handling ---
+    
     skip_negated: bool = True
     negation_confidence_penalty: float = 0.4
 
-    # --- KG embedding evaluation ---
+    
     min_triples_for_eval: int = 20
     kg_test_ratio: float = 0.2
 
-    # --- confidence constants ---
+    
     conf_ner: float = 0.9
     conf_noun_chunk: float = 0.6
     conf_distant_base: float = 0.7
     conf_similarity: float = 0.25
 
-    # --- active learning ---
+    
     al_confidence_shrinkage: float = 10.0
-    # Relation sources excluded from KG-embedding training (non-factual edges).
+   
     kg_excluded_sources: tuple = ('distributional_similarity',)
     al_refit_epochs: int = 12
     al_incremental_epochs: int = 3
@@ -212,10 +173,7 @@ def load_spacy_model(preferred: str = None, fallback: str = None):
     raise OSError(f"Neither '{preferred}' nor '{fallback}' is installed.")
 
 
-# Import-time load is made non-fatal: the module imports even without a model so
-# that the model-independent components (induction, stores, exports) are usable
-# and testable; anything that actually parses text raises a clear error on first
-# use if `nlp` is None.
+
 try:
     nlp = load_spacy_model()
 except OSError as _e:
@@ -240,11 +198,11 @@ try:
     _COREF_BACKEND = "fastcoref"
 except ImportError:
     try:
-        import spacy_experimental  # noqa: F401  # type: ignore
+        import spacy_experimental  
         _COREF_BACKEND = "spacy_experimental"
     except ImportError:
         try:
-            import neuralcoref  # noqa: F401  # type: ignore
+            import neuralcoref  
             _COREF_BACKEND = "neuralcoref"
         except ImportError:
             _COREF_BACKEND = None
@@ -642,7 +600,7 @@ class DistantSupervisionModule:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ALGORITHM 2a: OPEN INFORMATION EXTRACTION  (replaces frame slot filling)
+# ALGORITHM 2a: OPEN INFORMATION EXTRACTION  
 # ════════════════════════════════════════════════════════════════════════════
 
 class PropositionExtractor:

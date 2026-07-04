@@ -419,7 +419,7 @@ def load_carb(path: str) -> Dict[str, List[Tuple[str, str, str]]]:
     return dict(gold)
 
 
-# Re-OIE2016 ships in the same tab layout; reuse the CaRB loader.
+
 load_reoie2016 = load_carb
 
 
