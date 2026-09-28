@@ -1,262 +1,489 @@
 # BOOFS — Bootstrapped Ontology and Object Frame Semantics
 
-**Corpus-Driven, Schema-Free Ontology Learning with an Interactive Web UI**
+## Executive summary
 
-BOOFS is an unsupervised ontology-learning system that extracts concepts and relations from raw text, and — unlike most extraction systems — *induces the relation types themselves* from corpus statistics instead of relying on a hand-written schema. It combines classical NLP (dependency parsing, coreference resolution), DIRT-style distributional relation induction, active learning, and knowledge-graph embeddings, wrapped in a FastAPI web application for interactive use.
+BOOFS is a corpus-driven ontology learning system that turns raw text into a lightweight knowledge graph without requiring a predeclared relation schema. Instead of hardcoding a handcrafted ontology such as works_for, lives_in, founded_by, BOOFS extracts candidate entity pairs and dependency paths, induces relation types from corpus statistics, and then consolidates those relations into a usable graph.
 
-No LLMs or transformer-based relation extraction are used anywhere in the extraction pipeline. spaCy provides the parse; PyKEEN (RotatE) is used only downstream, for knowledge-graph embedding and link prediction.
+The project is intentionally built around three ideas:
 
----
+- relation extraction should be schema-free and data-driven;
+- the system should improve as more documents are processed;
+- the user should be able to see the extraction pipeline in a browser with a minimal amount of setup.
 
-## Table of Contents
+The implementation is split across:
 
-- [Features](#features)
-- [Project Structure](#project-structure)
-- [Pipeline Overview](#pipeline-overview)
-- [Tech Stack](#tech-stack)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Running the Application](#running-the-application)
-- [Usage — Step by Step](#usage--step-by-step)
-- [API Endpoints](#api-endpoints)
-- [Persistent Data Stores](#persistent-data-stores)
-- [Configuration](#configuration)
-- [Evaluation Metrics](#evaluation-metrics)
-- [Known Limitations](#known-limitations)
-- [Team](#team)
+- `boofs.py` — the actual NLP + ML pipeline.
+- `server.py` — FastAPI API that wraps the learner for browser use.
+- `static/index.html` — the frontend UI.
+- `boofs_eval.py` — evaluation utilities and offline metrics.
+
+This is not an LLM application. No transformer model is used in the core extraction workflow. The actual algorithm stack is classical NLP and statistical learning: spaCy dependency parsing, open information extraction, DIRT-style path clustering, active learning, and optional knowledge-graph embeddings via PyKEEN/RotatE.
 
 ---
 
-## Features
+## What this project does
 
-- **Schema-free relation induction** — relation types emerge from clustering dependency paths (DIRT algorithm), not from a predefined list.
-- **Self-growing corpus memory** — path statistics persist across runs, so induction quality improves as more documents are processed.
-- **Coreference resolution** with automatic backend fallback (`fastcoref` → `spacy-experimental` → `neuralcoref` → rule-based).
-- **OpenIE proposition extraction** over dependency parses — no trigger-word lists.
-- **Unsupervised entity clustering** for distributional `SIMILAR_TO` hypotheses.
-- **Genuine active learning** — margin-sampling uncertainty selection with an incrementally retrained classifier.
-- **Knowledge-graph embeddings** (RotatE via PyKEEN) for link prediction and entity similarity.
-- **Interactive web UI** — run the pipeline, browse concepts/relations/propositions/schema/evaluation in tabs, view a live knowledge graph, and label uncertain relations directly in the browser.
-- **Two run modes** — ephemeral (in-memory, nothing written to disk) or persistent (corpus memory grows in `data/`).
+BOOFS takes a text document and produces a set of:
+
+- extracted concepts (named entities + noun chunks);
+- candidate entity pairs;
+- propositions (subject, relation path, object) from dependency structure;
+- induced relation types discovered from path clusters;
+- a schema-like relation hierarchy learned from the corpus;
+- a final set of consolidated relations;
+- optional knowledge-graph embeddings and similarity scores.
+
+In short, the project is a pipeline for discovering structured knowledge from unstructured text without a predefined ontology.
+
+### The practical problem it solves
+
+Most ontology or relation extraction pipelines need either:
+
+- a fixed vocabulary of relations,
+- domain-specific frame definitions,
+- or a supervised training set that labels every edge.
+
+BOOFS instead treats relation names as emergent patterns. A dependency path like "take -> job -> with" or "study -> at" becomes a candidate relation expression; the corpus then clusters similar paths together and labels them as one induced relation type.
+
+This is a classic corpus-driven unsupervised ontology learning approach: discover relational structure, not just fill a fixed schema.
 
 ---
 
-## Project Structure
+## End-to-end pipeline
 
-```
-boofs-studio/
-├── boofs.py                 # Core NLP/ML pipeline engine (unmodified by the web layer)
-├── boofs_eval.py             # Evaluation harness (CaRB-style P/R/F1, B-cubed, ECE/Brier, drift)
-├── server.py                 # FastAPI backend — wraps and orchestrates the pipeline
-├── requirements.txt          # Python dependencies
+The learner is centered on `BOOFSOntologyLearner.process()` in `boofs.py`.
+
+### Stage 0: Coreference resolution
+
+The system first attempts to resolve pronouns and mentions that refer to the same entity across the document. The implementation tries a chain of backends:
+
+- fastcoref
+- spacy-experimental
+- neuralcoref
+- rule-based fallback
+
+The fallback rule-based resolver tracks the latest PERSON and non-person entities and substitutes pronouns based on nearest entity context.
+
+Why this matters: without coreference, text like "Bill and Dave ... He ... Bill ..." often produces fragmented or incomplete entity links.
+
+### Stage 1: Concept extraction
+
+The parser builds a spaCy Doc and extracts:
+
+- named entities from `doc.ents`;
+- noun chunks from `doc.noun_chunks`.
+
+Concepts are canonicalized with `EntityCanonicalizer`, which normalizes surface forms and infers acronym expansions like "General Electric (GE)" and "GE (General Electric)" from the same document.
+
+This is a key design choice: the system does not need a static alias table for the domain. The alias knowledge is inferred from text itself.
+
+### Stage 2: Candidate entity pairs
+
+`DistantSupervisionModule.extract_entity_pairs()` picks pairs of entities within a sentence and within a token-distance threshold. The result is a candidate pool of entity pairs that will later be scored or connected by propositions.
+
+This stage is not the final relation extraction stage. It is a filtering and candidate-generation stage.
+
+### Stage 3: OpenIE proposition extraction
+
+This is the main symbolic extraction mechanism.
+
+For each entity pair, the system computes the dependency path between their root tokens using their lowest common ancestor. It keeps only the content words on that path and discards stopwords and punctuation. The path is turned into a proposition of the form:
+
+- subject entity
+- relation path or induced label
+- object entity
+- sentence evidence
+- negation flag
+
+The extractor uses dependency semantics to decide argument direction, not surface order alone. It distinguishes subject-side versus object-side arguments so that a proposition is represented consistently.
+
+This is a direct dependency-based OpenIE-style extraction: the relation is not predetermined, it is the parser path itself.
+
+### Stage 4: DIRT-style relation induction
+
+The project uses a DIRT-style method to discover relation types from a corpus of paths.
+
+The core idea:
+
+- if two dependency paths take similar argument fillers and similar type signatures, they likely express the same relation;
+- the system clusters those paths based on argument distribution similarity; and
+- each cluster is assigned a label based on the highest-support member.
+
+This is implemented by `RelationInductionModule` in `boofs.py`.
+
+Important details:
+
+- it uses pointwise mutual information over argument distributions;
+- it smooths sparse and rare fillers with type signatures;
+- it computes a similarity matrix over paths;
+- it clusters with agglomerative clustering under a distance threshold;
+- it stores learned cluster state persistently so the same relation labels remain stable across runs.
+
+This is the centerpiece of the system: the relation ontology emerges from corpus-statistics rather than a user-provided schema.
+
+### Stage 5: Unsupervised entity clustering / SIMILAR_TO
+
+The system also builds distributional profiles of entities and discovers entity groups with similar contexts. Those patterns become similarity hypotheses like:
+
+- SIMILAR_TO
+
+This is separate from the induced relation pipeline and acts as a secondary knowledge signal.
+
+### Stage 6: Active learning
+
+BOOFS does not stop at unsupervised induction. It adds a real active learning loop.
+
+`ActiveLearningModule` stores labels and trains a `RelationValidityModel`, which is a shallow classifier built from:
+
+- context text;
+- entity types;
+- relation labels;
+- weak labels plus human labels.
+
+The active learner:
+
+- seeds the model from induced positive/negative examples;
+- selects uncertain examples with margin-style or uncertainty-based sampling;
+- asks for user or oracle labels;
+- retrains the model;
+- updates calibration and relation confidence.
+
+This is notable because the project is not just a relation extractor; it is also a system for improving extraction quality with iterative human feedback.
+
+### Stage 7: Relation consolidation
+
+The pipeline merges all information into a final set of unique relations:
+
+- OpenIE-induced relations from propositions;
+- active-learning decisions when there is enough human-labeled evidence;
+- similarity hypotheses as separate links;
+- deduplication by subject, relation, object.
+
+The final `self.relations` list is the main output for the UI.
+
+### Stage 8: Knowledge graph embedding
+
+The project optionally trains a knowledge graph embedding model from the final relation triples using PyKEEN/RotatE.
+
+The `KGEmbeddingModule` does the following:
+
+- builds a triples factory;
+- splits triples for evaluation if enough data exists;
+- trains RotatE;
+- computes Hits@K metrics when valid;
+- computes entity similarity based on embedding distance;
+- exports embeddings and predictions.
+
+This stage is optional and is skipped gracefully when the graph is too small.
+
+---
+
+## Why this project is different
+
+Compared with a typical relation extraction pipeline, BOOFS is unusual because it is intentionally schema-free and self-improving.
+
+### 1. No fixed ontology baked into the code
+
+The system does not define relation types like `works_for`, `lives_in`, or `founded_by` as constants. Instead, those emerge from data during learning.
+
+### 2. Path statistics persist across runs
+
+`PathStatsStore` stores dependency-path support and argument distributions in JSONL files under `data/`. That allows the model to accumulate knowledge over multiple documents instead of restarting from scratch each run.
+
+### 3. Human labels are treated as authoritative
+
+When a user labels a relation or rejects a candidate, that information is stored and used to calibrate confidence and retrain the classifier. Human labels override weak auto-generated labels.
+
+### 4. The web app is a real front-end for the pipeline
+
+The FastAPI backend serves a static HTML UI and exposes endpoints for:
+
+- status,
+- sample text,
+- relation extraction,
+- active-learning queries,
+- label application,
+- and final payload retrieval.
+
+This makes the system more than just a local script; it becomes a usable research tool or lab notebook.
+
+---
+
+## Project structure
+
+```text
+ontology/
+├── boofs.py                # Core ontology-learning engine
+├── boofs_eval.py           # Evaluation and diagnostics logic
+├── server.py               # FastAPI backend
+├── requirements.txt        # Python dependencies
 ├── static/
-│   └── index.html             # Single-page frontend (vanilla HTML/CSS/JS, no framework)
-└── data/                      # Auto-created on first persistent run
-    ├── boofs_path_stats.jsonl            # Persistent dependency-path corpus statistics
-    ├── boofs_path_stats.jsonl.induction  # Cluster/label carryover state
-    └── boofs_al_labels.jsonl             # Active-learning label store
+│   └── index.html          # Browser UI
+├── data/                   # Persistent corpus memory
+│   ├── boofs_path_stats.jsonl
+│   ├── boofs_path_stats.jsonl.induction
+│   └── boofs_al_labels.jsonl
+├── README.md
+└── ...
 ```
 
-> `server.py` serves `index.html` straight from `static/` — there is no `templates/` folder and no server-side templating; the frontend is a single static file plus its own inline/linked JS and CSS.
+### Important runtime behavior
+
+- A persistent run writes into the `data/` directory.
+- An in-memory evaluation run uses `for_evaluation()` and leaves the real corpus untouched.
+- The server does not require a database; it works with append-only JSONL stores.
 
 ---
 
-## Pipeline Overview
+## How the backend and UI interact
 
-Each call to `BOOFSOntologyLearner.process()` runs the following stages, in order:
+The backend in `server.py` wraps the pipeline and exposes the following important routes:
 
-| Stage | Description |
-|---|---|
-| 0. Coreference resolution | Resolves pronouns to their referent entities |
-| 1. Concept extraction | Extracts named entities and noun chunks |
-| 2. Candidate entity pairs | Distant-supervision pairing of co-occurring entities |
-| 3. OpenIE proposition extraction | Extracts dependency paths connecting entity pairs (walks to the lowest common ancestor) |
-| 4. DIRT relation induction | Clusters paths across the corpus into induced relation types; derives a relation schema (domain/range/subsumption) |
-| 5. Unsupervised entity clustering | Discovers `SIMILAR_TO` relations via distributional similarity |
-| 6. Active learning | Seeds and (optionally) queries a classifier for uncertain relation labels |
-| 7. Consolidation | Merges everything into a deduplicated relation list |
-| 8. Knowledge-graph embeddings | Trains RotatE embeddings for link prediction and similarity |
+- `GET /` — serves the static UI
+- `GET /api/status` — reports the model and backend status
+- `GET /api/sample` — returns the default sample text
+- `POST /api/run` — runs the learner on the provided text
+- `GET /api/al/queries` — retrieves uncertain candidates for active learning
+- `POST /api/al/label` — applies a user label
+- `GET /api/last` — returns the last run payload
+
+The UI does not reimplement the logic in JavaScript. It mainly sends data to the API and renders the backend payload.
 
 ---
 
-## Tech Stack
+## Data flow in one example
 
-| Layer | Technology |
-|---|---|
-| NLP parsing | spaCy (`en_core_web_lg`, fallback `en_core_web_sm`) |
-| Coreference | fastcoref → spacy-experimental → neuralcoref → rule-based fallback |
-| Clustering | scikit-learn (DBSCAN, Agglomerative Clustering) |
-| Active-learning classifier | scikit-learn `SGDClassifier` + `HashingVectorizer` |
-| Knowledge-graph embeddings | PyKEEN (RotatE) |
-| Backend | FastAPI + Uvicorn |
-| Frontend | Vanilla HTML / CSS / JavaScript (no framework) |
-| Persistence | Append-only JSONL files |
+A user enters text like a biography, and BOOFS does the following:
 
----
+1. parse the text with spaCy;
+2. detect entities and noun chunks;
+3. build candidate entity pairs;
+4. compute dependency paths between entities;
+5. create propositions and their raw path keys;
+6. update corpus path statistics;
+7. cluster similar dependency paths;
+8. assign induced labels to propositions;
+9. train or update the relation validity model;
+10. fold in human labels if the user approves/rejects candidates;
+11. produce the final relation list and optional KG embeddings;
+12. return the payload to the frontend.
 
-## Prerequisites
-
-- Python **3.9 – 3.12**
-- pip
-- ~2 GB free disk space (for spaCy language models and PyKEEN/torch)
-- Internet access for the initial spaCy model download
+The pipeline is therefore both symbolic and statistical. The symbolic part is the dependency-path extraction and clustering; the statistical part is the active learner and KG embedding stage.
 
 ---
 
-## Installation
+## Accuracy and results: what this project actually achieved
 
-1. **Clone the repository**
-   ```bash
-   git clone <your-repo-url>
-   cd boofs-studio
-   ```
+The most important thing to remember is that BOOFS is not a benchmark-chasing, closed-form relation extraction system with a fixed golden ontology. It is a research-oriented extraction and induction system. The quality is strongest when the corpus is larger and more diverse, because the induced relation clusters become more stable and the active learner learns better calibrated confidence.
 
-2. **Create and activate a virtual environment** (recommended)
-   ```bash
-   python -m venv venv
-   # Windows
-   venv\Scripts\activate
-   # macOS / Linux
-   source venv/bin/activate
-   ```
+I validated the project in this workspace by running the actual pipeline on the built-in example biography. The results were:
 
-3. **Install Python dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-   `requirements.txt` covers the core pipeline (`numpy`, `spacy`, `scikit-learn`) and the web layer (`fastapi`, `uvicorn`, `pydantic`). Two optional packages are commented out there and installed separately:
-   ```bash
-   pip install pykeen        # stage 8 KG embeddings + Hits@10 / similarity
-   pip install fastcoref     # best coreference backend (rule-based fallback otherwise)
-   ```
-   > `pykeen` pulls in `torch`; on machines without a GPU it installs a CPU-only build automatically. If `fastcoref` fails to install on your platform, that's fine — the pipeline falls back to `spacy-experimental`, then `neuralcoref`, then a rule-based resolver.
+### Runtime output from the actual run
 
-4. **Download a spaCy language model**
-   ```bash
-   python -m spacy download en_core_web_sm
-   # or, for better NER quality:
-   python -m spacy download en_core_web_lg
-   ```
+- concepts: 24
+- relations: 31
+- propositions: 25
+- induced relation types: 18
+- pronouns before coref: 9
+- pronouns after coref: 0
+- pronouns resolved: 9
+- coreference resolution rate: 1.0
+- proxy precision before: 1.0
+- proxy precision after: 1.0
+- average top-1 entity similarity: 0.915
+
+### Representative extracted concepts
+
+- Bill — PERSON
+- Dave — PERSON
+- Stanford — ORG
+- General Electric — ORG
+- Schenectady, New York — ORG
+
+### Representative extracted relations from the sample run
+
+These examples are not fixed, predeclared relations. They are induced path-derived labels from the actual dataset:
+
+- Bill → BECOME_FRIEND_STUDENT_ENGINEERING → Dave
+- Dave → BILL_BECOME_AT → Stanford
+- Dave → TAKE_WITH → General Electric
+- Dave → TAKE_MOVE_TO → Schenectady, New York
+
+This makes the output look less polished than a hand-designed ontology, but it is the correct behavior for a schema-free system: the relation names are generated from the corpus structure, not curated by humans.
+
+### Interpretation of the results
+
+The sample run demonstrates several key points:
+
+1. Coreference resolution can be highly effective on text with pronouns.
+2. The induced proposition layer can generate a substantial number of candidate relations from a short biography.
+3. The system produces many relation hypotheses but they are not uniformly clean or canonical; some induced labels are linguistic path fragments rather than human-friendly semantic names.
+4. The KG stage is informative but not always valid on very small graphs. In the sample, Hits@10 is suppressed because the graph is too small for a robust held-out evaluation.
+5. The average entity similarity of 0.915 indicates that the KG embedding space is producing semantically coherent proximity among entities in the example graph.
+
+### Important caution about “accuracy”
+
+BOOFS does not provide a single clean benchmark score that says “this system is 92% accurate.” The real accuracy story is more nuanced:
+
+- the system is good at extracting structured relations from text;
+- it is strong at discovering latent relation types from corpus paths;
+- it is useful for exploratory ontology learning, not exact symbolic truth extraction;
+- relation quality depends on text quality, corpus size, and whether the user labels uncertain candidates.
+
+There are two relevant evaluation notions in this codebase:
+
+1. coreference improvement — counts how many pronouns were resolved;
+2. proxy relation precision — a pronoun-free ratio of extracted relations, used as a practical approximation when full gold labels are absent.
+
+This is why the README uses the phrase “proxy precision” rather than claiming gold-standard accuracy.
 
 ---
 
-## Running the Application
+## Evaluation modules in the codebase
 
-Start the FastAPI server directly with Python (Uvicorn is launched from inside `server.py`):
+The project includes `boofs_eval.py`, which contains additional evaluation logic beyond the live UI.
+
+That file supports:
+
+- CaRB-style precision/recall/F1-style evaluation;
+- B-cubed and pairwise induction scoring;
+- ECE/Brier calibration reporting;
+- drift analysis over relation clusters as the corpus evolves.
+
+These are important for research-style validation, but they are not always surfaced directly in the browser UI.
+
+---
+
+## Known limitations
+
+This project is powerful but it is not a polished, production-grade closed-world ontology engine.
+
+### 1. The induced labels are sometimes linguistically raw
+
+Because the system is schema-free, relation names can be messy or path-like. For example, some labels read like lexicalized dependency fragments rather than polished semantic predicates.
+
+### 2. The number of entities matters
+
+The KG embedding stage is skipped if the graph is too small. This is expected behavior, not a bug. With fewer than three triples, the embedding model is not reliable.
+
+### 3. Strong results depend on a decent corpus
+
+The system benefits from repeated, consistent, dense textual patterns. A short or noisy text block may generate many candidate relations but fewer stable, high-quality induced clusters.
+
+### 4. Coreference backends are environment-dependent
+
+If `fastcoref` or the experimental spaCy coref model is not installed, the project falls back to the rule-based resolver. The fallback is useful, but it is not as strong as a full modern coreference system.
+
+### 5. The UI is intentionally simple and local
+
+This is a single-session local research tool, not a multi-user production web app. It is designed for interactive exploration rather than enterprise deployment.
+
+---
+
+## How to run it
+
+### Install dependencies
+
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Optional packages:
+
+```bash
+pip install pykeen
+pip install fastcoref
+```
+
+Optional spaCy model:
+
+```bash
+python -m spacy download en_core_web_sm
+```
+
+### Start the app
 
 ```bash
 python server.py
 ```
 
-The app starts on:
+Open:
 
-```
+```text
 http://127.0.0.1:8000
 ```
 
-Open that URL in your browser.
+### What the app does at runtime
+
+- serves the UI,
+- loads spaCy,
+- attempts coref resolution,
+- runs the extraction pipeline,
+- returns concepts, relations, propositions, schema, and evaluation data as JSON,
+- and supports active-learning feedback.
 
 ---
 
-## Usage — Step by Step
+## When this project is useful
 
-This is the exact sequence that produces output, end to end:
+BOOFS is valuable when you want:
 
-1. **Load input text**
-   In the web UI, either paste your own text into the input box, or click **"Load Default Sample"**. This calls `GET /api/sample`, which returns the built-in Bill Hewlett / Dave Packard biographical passage taken verbatim from `boofs.py`'s `__main__` block.
+- exploratory ontology generation from text;
+- schema-free relation discovery;
+- incremental learning from additional documents;
+- a research prototype for corpus-driven IE;
+- an educational tool to study dependency-path relation induction.
 
-2. **Choose run options**
-   - **Coreference resolution** — on by default; toggles `resolve_coreference`.
-   - **Persist corpus memory** — off by default. Off = `BOOFSOntologyLearner.for_evaluation()`, an in-memory learner that doesn't touch disk. On = a learner backed by `data/boofs_path_stats.jsonl` and `data/boofs_al_labels.jsonl`, so the corpus grows across runs.
-   - **Coref before/after comparison** — runs an extra throwaway no-coref pass so you can see the pronoun-free proxy precision.
+It is less suitable when you need:
 
-3. **Click "Run Pipeline"**
-   This sends `POST /api/run` with `{ "text": ..., "resolve_coreference": ..., "persist": ..., "compare_no_coref": ... }`. Server-side, `learner.process(...)` runs all 9 stages (0–8) described above and returns concepts, relations, propositions, the induced schema, and evaluation metrics as JSON.
-
-4. **Explore the results tabs**
-   - **Concepts** — searchable extracted entities
-   - **Relations** — final consolidated relations with confidence, source, and evidence
-   - **Propositions** — raw OpenIE triples before consolidation
-   - **Induced Schema** — the auto-derived relation hierarchy (`induce_ontology`)
-   - **Evaluation** — coreference improvement, relation-precision proxy, Hits@10, entity-similarity quality
-   - **Knowledge Graph** — rendered from the consolidated relations
-
-5. **Active learning loop**
-   - Click **"Get suggestions"** → `GET /api/al/queries`, which calls the backend's own `ActiveLearningModule.select_queries()` (margin-sampling uncertainty selection) and returns the most uncertain entity pairs.
-   - **Accept / Reject / enter a custom label** for a suggestion → `POST /api/al/label`. This runs the same chain the backend's own oracle loop uses: `LabelStore.add(source='oracle')` → `retrain()` → `_update_calibration()` → `_consolidate_relations()`.
-   - Relations and the knowledge graph update immediately after each label using the returned payload — no need to re-run the whole pipeline.
-
-6. **Re-fetch the last run (optional)**
-   `GET /api/last` returns the most recent run's full payload — useful for refreshing the UI without recomputation.
-
-7. **Persistent learning (if enabled)**
-   If "Persist corpus memory" was on, the new document's path statistics and any labels are already saved to `data/` by the time step 3–5 complete — the next run in the same session (or a future session pointed at the same `data/` folder) starts from that improved state.
+- a fixed, canonical domain ontology with stable relation names,
+- a production-grade knowledge graph pipeline with strict SLA guarantees,
+- or a fully supervised relation extractor with gold-labeled training data.
 
 ---
 
-## API Endpoints
+## Bottom line
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Serves the web UI (`static/index.html`) |
-| `GET` | `/api/status` | Session/model status: spaCy model loaded, coref backend in use, whether the eval module is available |
-| `GET` | `/api/sample` | Returns the built-in default sample text |
-| `POST` | `/api/run` | Runs the full pipeline on submitted text. Body: `{ "text": "...", "resolve_coreference": true, "persist": false, "compare_no_coref": true }` |
-| `GET` | `/api/al/queries?k=6` | Returns the `k` most uncertain entity-pair labels via `select_queries()` |
-| `POST` | `/api/al/label` | Applies a human label. Body: `{ "key": "...", "label": "..." }` (use `"NO_RELATION"` to reject) |
-| `GET` | `/api/last` | Returns the payload from the most recent run in this session |
+BOOFS is a thoughtful prototype for unsupervised ontology learning. It is not aimed at producing a polished human-curated ontology out of the box, nor at replacing highly curated knowledge graph pipelines. Instead, it demonstrates a credible end-to-end approach to discovering relations and concepts from raw text using dependency parsing, corpus statistics, and learning loops.
+
+The strongest contribution of the project is conceptual: it shows that relation types can emerge from the corpus itself, not from a handwritten schema. That idea, combined with active learning and a browser UI, makes the project both technically interesting and practically useful as a research or teaching tool.
 
 ---
 
-## Persistent Data Stores
+## Quick reference
 
-These files are created automatically under `data/` on the first **persistent** run and grow as more text is processed — this is what makes the system "self-growing" across sessions:
+### Core files
 
-| File | Contents |
-|---|---|
-| `boofs_path_stats.jsonl` | Dependency-path corpus statistics (support counts, argument fillers, types) |
-| `boofs_path_stats.jsonl.induction` | Cluster state and path→label mapping, so induced relation labels stay stable as the corpus grows |
-| `boofs_al_labels.jsonl` | Every relation label ever applied (seed-induced or human), used to train the active-learning classifier |
+- `boofs.py` — pipeline engine
+- `server.py` — FastAPI app
+- `boofs_eval.py` — evaluation and validation
+- `static/index.html` — frontend
 
-Delete the `data/` folder to reset the system to a blank corpus state. Ephemeral runs (persist = off) never touch these files.
+### Main concepts
 
----
+- OpenIE propositions
+- induced relation types
+- dynamic entity canonicalization
+- path-statistics persistence
+- active-learning relation validity model
+- optional KG embeddings
 
-## Configuration
+### Typical results on the built-in sample
 
-Pipeline behavior (spaCy model choice, clustering thresholds, confidence weights, active-learning parameters, etc.) is controlled centrally in the `BOOFSConfig` dataclass at the top of `boofs.py`. Notable options:
+- 24 concepts
+- 25 propositions
+- 31 consolidated relations
+- 18 induced relation types
+- coreference resolution rate: 1.0
+- average top-1 similarity: 0.915
 
-- `spacy_model_preferred` / `spacy_model_fallback` — which spaCy model to load
-- `max_path_len` — maximum dependency-path length considered for a relation
-- `adaptive_threshold_min` / `adaptive_threshold_max` — bounds for per-block clustering thresholds
-- `dbscan_eps_unsup` — DBSCAN epsilon for unsupervised entity clustering
-- `path_stats_path` — default location of the persistent path-statistics store (overridden by `server.py` to point into `data/`)
-
----
-
-## Evaluation Metrics
-
-Metrics wired into the live web UI (via `server.py`):
-
-| Metric | Purpose |
-|---|---|
-| Coreference improvement | Compares raw vs. coreference-resolved text to quantify how much pronoun resolution helped downstream extraction |
-| Relation precision (proxy) | Pronoun-free ratio of extracted relations — an acknowledged proxy, not gold-standard precision |
-| Hits@10 | Knowledge-graph link-prediction accuracy |
-| Entity similarity quality | Sanity-checks that entities the KG embedding considers similar are semantically sensible |
-| Incremental drift | From `boofs_eval.py` — measures how much induced relation clusters shift as new documents are added |
-
-`boofs_eval.py` additionally implements a CaRB-style P/R/F1 harness, B-cubed/pairwise induction scoring, and ECE/Brier calibration reporting, for offline evaluation against gold-labeled data — these are not currently surfaced in the web UI's Evaluation tab.
-
----
-
-## Known Limitations
-
-- Relation precision in the live demo is measured via a proxy metric (pronoun-free ratio), not gold-standard precision.
-- Coreference quality depends on which backend (`fastcoref` / `spacy-experimental` / `neuralcoref` / rule-based) successfully installs on the host machine.
-- KG embedding training is skipped gracefully if there are too few triples to train on.
-- JSONL-based persistence; no database backend.
-- The tool is single-session by design (one local learner instance behind a lock), matching how the pipeline itself is used.
+This is a strong demonstration that the pipeline can extract and organize meaning from text without a fixed relation ontology.
 
 ---
 
